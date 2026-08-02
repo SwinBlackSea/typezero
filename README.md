@@ -38,7 +38,7 @@ curl -X POST http://127.0.0.1:8080/v1/dictations \
 
 ## 构建 macOS 客户端
 
-客户端最低支持 macOS 13。`project.yml` 使用 XcodeGen 生成工程：
+客户端最低支持 macOS 12。`project.yml` 使用 XcodeGen 生成工程：
 
 ```bash
 cd client
@@ -46,11 +46,11 @@ xcodegen generate
 open TypeZero.xcodeproj
 ```
 
-在 Xcode 中选择开发团队并运行。首次使用时需要授予麦克风、输入监控和辅助功能权限：输入监控用于接收其他应用中的全局快捷键，辅助功能用于将文字插入其他应用。默认连接 `http://127.0.0.1:8080`；远程地址必须使用 HTTPS。
+在 Xcode 中选择开发团队并运行。首次使用时需要授予麦克风、输入监控和辅助功能权限：输入监控用于接收其他应用中的全局快捷键，辅助功能用于将文字插入其他应用。授权对象必须是当前构建出的 `TypeZero.app`；存在旧 Typeless/TypeZero 项时应删除后重新添加。默认连接 `http://127.0.0.1:8080`；开发期远程 HTTP 可用，生产环境必须使用 HTTPS。
 
 用户自带的 DashScope/DeepSeek Key 可在客户端设置中选填，只保存在 macOS Keychain。上传时 Key 仅用于当前供应商请求；后端不记录、不回传。
 
-Fn 单键监听受具体 Mac、键盘和系统设置影响。如果不可用，可在设置中切换到 `Control + Option + Space` 或 `Command + Shift + Space`。
+默认快捷键为 `Control + Option + Space`；Fn 单键受具体 Mac、键盘和系统设置影响，仅作实验性选项。完成听写后，客户端会先将文字复制到剪贴板，再尝试粘贴到当前输入框。
 
 ## 测试
 

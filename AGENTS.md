@@ -55,7 +55,7 @@ timer = Timer.scheduledTimer(...) { @MainActor [weak self] _ in
 tickTask = Task { [weak self] in
     while !Task.isCancelled {
         await self?.tick()
-        try? await Task.sleep(for: .milliseconds(250))
+        try? await Task.sleep(nanoseconds: 250_000_000)
     }
 }
 ```
@@ -104,7 +104,7 @@ model.onStatusChanged = { phase in self.updateIcon(for: phase) }
 
 ### 规则 7：ShortcutMonitor 只用 globalMonitor
 
-有了辅助功能权限后，`addLocalMonitorForEvents` 和 `addGlobalMonitorForEvents` 会同时触发同一按键事件，导致录音状态冲突崩溃。**只用 globalMonitor**。
+有了输入监控权限后，`addLocalMonitorForEvents` 和 `addGlobalMonitorForEvents` 会同时触发同一按键事件，导致录音状态冲突崩溃。**只用 globalMonitor**。
 
 ### 规则 8：AppDelegate 里观察 model 状态变化，用回调不用 Combine
 
@@ -122,6 +122,24 @@ model.onStatusChanged = { phase in self.updateIcon(for: phase) }
 
 生产环境再加回。当前 150 机器后端只支持 HTTP。
 
+### 规则 10：Info.plist 必须由 XcodeGen 配置保留
+
+`xcodegen generate` 会重写 `client/project.yml` 中 `info.path` 指向的 Info.plist。权限描述和菜单栏配置必须写在 `info.properties`，不能只手动编辑 `TypeZero/Info.plist`。每次生成后都要确认：
+
+```bash
+plutil -p TypeZero/Info.plist | grep NSMicrophoneUsageDescription
+```
+
+缺少该字段时，macOS 会在访问麦克风时以 TCC 隐私违规直接终止应用。
+
+### 规则 11：三种 macOS 权限职责分离
+
+- 麦克风：录音，要求 App 包内有 `NSMicrophoneUsageDescription`。
+- 输入监控：`addGlobalMonitorForEvents` 接收其他应用前台时的组合键。
+- 辅助功能：通过模拟 `Command + V` 向其他应用粘贴文字。
+
+权限与当前 `TypeZero.app` 的路径和签名绑定。出现 Typeless 或旧 TypeZero 残留项时，删除旧项后重新添加当前构建出的 App；授权后重启客户端或刷新快捷键监听。
+
 ## 后端环境
 
 - **服务器**: 150.109.246.151（Ubuntu）
@@ -137,3 +155,4 @@ model.onStatusChanged = { phase in self.updateIcon(for: phase) }
 - ❌ statusItem.button.action
 - ❌ Combine 管道观察 @MainActor 属性
 - ❌ localMonitor（double-firing）
+- ❌ `Task.sleep(for:)` / `.milliseconds(...)`（macOS 13+ API）

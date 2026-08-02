@@ -16,14 +16,21 @@ macOS 客户端
 ## macOS 客户端
 
 - 技术栈：Swift + SwiftUI，必要处使用 AppKit。
-- 系统要求：macOS 13 及以上；使用 XcodeGen 从 `client/project.yml` 生成 Xcode 工程。
+- 系统要求：macOS 12 及以上；当前开发环境固定为 macOS 12.6、Xcode 14.2、Swift 5.7 和 XcodeGen 2.42。使用 XcodeGen 从 `client/project.yml` 生成 Xcode 工程。
 - 录音：AVFoundation，输出 16 kHz、单声道、32 kbps 的 M4A/AAC 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。
-- 快捷键：监听 macOS 全局键盘事件，优先尝试 Fn，并提供可配置组合键作为兼容方案；全局监听需要“输入监控”权限。
+- 快捷键：使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。
 - 文字插入：先写入剪贴板，再通过 Accessibility API 模拟粘贴；模拟粘贴失败时保留剪贴板文字，文字插入需要“辅助功能”权限。
+- 悬浮反馈：录音、处理中、成功和失败状态使用不抢焦点的 `NSPanel` 悬浮胶囊展示；录音时可点击取消或结束，不得抢走目标输入框焦点。
 - 凭据：用户自带 Key 时保存到 macOS Keychain，禁止明文落盘。
 - 分发：Developer ID 签名并经 Apple 公证，以 DMG/ZIP 发布；首版不走 Mac App Store 沙盒。
 
 不选择 Tauri 的原因：当前只开发 macOS，原生 Swift 对全局快捷键、录音、辅助功能和系统权限的集成更直接。需要支持 Windows 时再评估跨平台方案。
+
+### XcodeGen 与权限清单
+
+- `client/project.yml` 是 Info.plist 的唯一配置源。XcodeGen 会在生成工程时重写 `info.path` 指向的文件，因此 `NSMicrophoneUsageDescription`、`LSUIElement`、ATS 等所有自定义字段必须同时声明在 `info.properties`，不能只手动编辑 `client/TypeZero/Info.plist`。
+- 每次执行 `xcodegen generate` 后，构建前检查生成的 `TypeZero/Info.plist`，构建后检查 App 包内的 `Contents/Info.plist` 是否包含 `NSMicrophoneUsageDescription`；缺失时 macOS TCC 会在首次录音时直接终止进程。
+- 麦克风权限、输入监控权限和辅助功能权限相互独立。授权对象必须是当前实际运行的 `TypeZero.app`；更换构建路径、签名或残留的 Typeless/旧 TypeZero 条目时，应删除旧项并重新添加当前 App，再重启客户端或刷新监听。
 
 ## 后端
 
@@ -63,6 +70,8 @@ macOS 客户端
 3. 调用 DeepSeek 得到 `final_text`。
 4. 润色失败时仍返回 `raw_text`，客户端让用户选择是否插入。
 5. 插入失败时自动复制结果到剪贴板，避免内容丢失。
+
+开发期若客户端显示 HTTP 503，先检查客户端服务地址、反向代理和 Go 服务健康检查；当前 Go 听写接口本身不返回 503，供应商识别失败会返回 502，处理超时返回 504。
 
 ## 安全与性能
 

@@ -6,3 +6,6 @@ client/TypeZero.xcodeproj/
 client/DerivedData/
 client/**/xcuserdata/
 *.xcuserstate
+*.log
+client/build/
+client/.typezero-build/
