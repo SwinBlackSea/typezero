@@ -106,6 +106,8 @@ model.onStatusChanged = { phase in self.updateIcon(for: phase) }
 
 有了输入监控权限后，`addLocalMonitorForEvents` 和 `addGlobalMonitorForEvents` 会同时触发同一按键事件，导致录音状态冲突崩溃。**只用 globalMonitor**。
 
+`experiment/fn-event-tap` 分支是唯一例外：仅为验证 Fn 被系统映射时的兼容性，可用被动 `CGEventTap` 替换（不能叠加）Fn 的 global flags monitor。该 tap 必须使用 `listenOnly`，不得拦截或修改事件，创建失败时回退 global monitor；未经 macOS 12 真机验证不得合并到 `main`。
+
 ### 规则 8：AppDelegate 里观察 model 状态变化，用回调不用 Combine
 
 见规则 6。涉及异步状态回调统一用 closure，不要用 `$phase.sink` / `objectWillChange` / `.receive(on:)` 等 Combine 管道。
