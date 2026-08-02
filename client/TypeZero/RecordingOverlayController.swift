@@ -143,7 +143,7 @@ private final class RecordingOverlayView: NSView {
             withAttributes: attributes
         )
         let startX = titleX + titleSize.width + 10
-        NSColor.systemRed.withAlphaComponent(0.88).setStroke()
+        NSColor.white.withAlphaComponent(0.9).setStroke()
 
         for (index, envelope) in envelopes.enumerated() {
             let ripple = (sin(animationPhase * 1.9 + CGFloat(index) * 0.92) + 1) / 2

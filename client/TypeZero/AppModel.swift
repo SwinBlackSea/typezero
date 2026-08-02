@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
 
     private let recorder = AudioRecorder()
     private let inserter = TextInserter()
+    private let feedbackTonePlayer = FeedbackTonePlayer()
     private let shortcutMonitor = ShortcutMonitor()
     private var processingTask: Task<Void, Never>?
     private var hasRequestedSystemPermissions = false
@@ -116,6 +117,7 @@ final class AppModel: ObservableObject {
                 return
             }
             setPhase(.processing)
+            feedbackTonePlayer.playStop()
             process(recording)
             return
         }
@@ -125,6 +127,7 @@ final class AppModel: ObservableObject {
             try await recorder.start()
             elapsedSeconds = 0
             setPhase(.recording)
+            feedbackTonePlayer.playStart()
         } catch {
             setPhase(.failure(error.localizedDescription))
         }
