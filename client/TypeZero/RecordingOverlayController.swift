@@ -3,10 +3,9 @@ import AppKit
 final class RecordingOverlayController {
     private let panel: NSPanel
     private let overlayView: RecordingOverlayView
-    private var hideWorkItem: DispatchWorkItem?
 
     init(onCancel: @escaping () -> Void, onStop: @escaping () -> Void) {
-        overlayView = RecordingOverlayView(frame: NSRect(x: 0, y: 0, width: 202, height: 54))
+        overlayView = RecordingOverlayView(frame: NSRect(x: 0, y: 0, width: 164, height: 44))
         panel = NSPanel(
             contentRect: overlayView.bounds,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -27,21 +26,12 @@ final class RecordingOverlayController {
     }
 
     func update(for phase: AppModel.Phase) {
-        hideWorkItem?.cancel()
-        hideWorkItem = nil
-
         switch phase {
         case .recording:
             show(.recording)
         case .processing:
             show(.processing)
-        case .success:
-            show(.success)
-            hideAfterFeedback()
-        case .failure:
-            show(.failure)
-            hideAfterFeedback()
-        case .idle, .rawTextAvailable:
+        case .success, .failure, .idle, .rawTextAvailable:
             overlayView.stopAnimating()
             panel.orderOut(nil)
         }
@@ -60,21 +50,13 @@ final class RecordingOverlayController {
         panel.orderFrontRegardless()
     }
 
-    private func hideAfterFeedback() {
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.panel.orderOut(nil)
-        }
-        hideWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: workItem)
-    }
-
     private func positionPanel() {
         let mouseLocation = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else { return }
         let origin = NSPoint(
             x: visibleFrame.midX - panel.frame.width / 2,
-            y: visibleFrame.minY + 72
+            y: visibleFrame.minY + 56
         )
         panel.setFrameOrigin(origin)
     }
@@ -84,8 +66,6 @@ private final class RecordingOverlayView: NSView {
     enum State: Equatable {
         case recording
         case processing
-        case success
-        case failure
     }
 
     var state: State = .recording {
@@ -110,8 +90,8 @@ private final class RecordingOverlayView: NSView {
     var onCancel: (() -> Void)?
     var onStop: (() -> Void)?
 
-    private let sideSize: CGFloat = 32
-    private let sideInset: CGFloat = 10
+    private let sideSize: CGFloat = 26
+    private let sideInset: CGFloat = 8
     private var animationTimer: Timer?
     private var animationPhase: CGFloat = 0
 
@@ -124,11 +104,9 @@ private final class RecordingOverlayView: NSView {
     func preferredSize(for state: State) -> NSSize {
         switch state {
         case .recording:
-            return NSSize(width: 202, height: 54)
+            return NSSize(width: 164, height: 44)
         case .processing:
-            return NSSize(width: 154, height: 44)
-        case .success, .failure:
-            return NSSize(width: 64, height: 44)
+            return NSSize(width: 124, height: 36)
         }
     }
 
@@ -155,10 +133,6 @@ private final class RecordingOverlayView: NSView {
             drawStopButton()
         case .processing:
             drawProcessing()
-        case .success:
-            drawFeedback(symbol: "✓", color: .systemGreen)
-        case .failure:
-            drawFeedback(symbol: "!", color: .systemOrange)
         }
     }
 
@@ -185,12 +159,12 @@ private final class RecordingOverlayView: NSView {
         NSBezierPath(ovalIn: cancelRect).fill()
         NSColor.white.setStroke()
         let path = NSBezierPath()
-        path.lineWidth = 2
+        path.lineWidth = 1.7
         path.lineCapStyle = .round
-        path.move(to: NSPoint(x: cancelRect.minX + 10, y: cancelRect.minY + 10))
-        path.line(to: NSPoint(x: cancelRect.maxX - 10, y: cancelRect.maxY - 10))
-        path.move(to: NSPoint(x: cancelRect.maxX - 10, y: cancelRect.minY + 10))
-        path.line(to: NSPoint(x: cancelRect.minX + 10, y: cancelRect.maxY - 10))
+        path.move(to: NSPoint(x: cancelRect.minX + 8, y: cancelRect.minY + 8))
+        path.line(to: NSPoint(x: cancelRect.maxX - 8, y: cancelRect.maxY - 8))
+        path.move(to: NSPoint(x: cancelRect.maxX - 8, y: cancelRect.minY + 8))
+        path.line(to: NSPoint(x: cancelRect.minX + 8, y: cancelRect.maxY - 8))
         path.stroke()
     }
 
@@ -199,29 +173,29 @@ private final class RecordingOverlayView: NSView {
         NSBezierPath(ovalIn: stopRect).fill()
         NSColor(calibratedWhite: 0.08, alpha: 1).setStroke()
         let path = NSBezierPath()
-        path.lineWidth = 2.2
+        path.lineWidth = 1.9
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        path.move(to: NSPoint(x: stopRect.minX + 9, y: stopRect.midY))
-        path.line(to: NSPoint(x: stopRect.midX - 1, y: stopRect.minY + 10))
-        path.line(to: NSPoint(x: stopRect.maxX - 9, y: stopRect.maxY - 10))
+        path.move(to: NSPoint(x: stopRect.minX + 7, y: stopRect.midY))
+        path.line(to: NSPoint(x: stopRect.midX - 1, y: stopRect.minY + 8))
+        path.line(to: NSPoint(x: stopRect.maxX - 7, y: stopRect.maxY - 8))
         path.stroke()
     }
 
     private func drawWaveform() {
         let envelopes: [CGFloat] = [0.32, 0.5, 0.72, 0.94, 0.68, 0.86, 0.56, 0.38]
-        let lineSpacing: CGFloat = 7
+        let lineSpacing: CGFloat = 5.4
         let totalWidth = CGFloat(envelopes.count - 1) * lineSpacing
         let startX = bounds.midX - totalWidth / 2
         NSColor.white.withAlphaComponent(0.95).setStroke()
 
         for (index, envelope) in envelopes.enumerated() {
             let ripple = (sin(animationPhase * 1.9 + CGFloat(index) * 0.92) + 1) / 2
-            let idleHeight: CGFloat = 6 + ripple * 3
-            let voiceHeight = 10 + (audioLevel * 28 * envelope) + (ripple * 5)
+            let idleHeight: CGFloat = 5 + ripple * 2
+            let voiceHeight = 8 + (audioLevel * 21 * envelope) + (ripple * 4)
             let height = max(idleHeight, voiceHeight)
             let path = NSBezierPath()
-            path.lineWidth = 2.8
+            path.lineWidth = 2.2
             path.lineCapStyle = .round
             let x = startX + CGFloat(index) * lineSpacing
             path.move(to: NSPoint(x: x, y: bounds.midY - height / 2))
@@ -232,12 +206,12 @@ private final class RecordingOverlayView: NSView {
 
     private func drawProcessing() {
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.88),
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.82),
         ]
-        let title = "正在整理" as NSString
+        let title = "正在处理" as NSString
         let titleSize = title.size(withAttributes: attributes)
-        let titleX = bounds.midX - 8 - titleSize.width / 2
+        let titleX = bounds.midX - 7 - titleSize.width / 2
         title.draw(
             at: NSPoint(x: titleX, y: bounds.midY - titleSize.height / 2),
             withAttributes: attributes
@@ -245,33 +219,14 @@ private final class RecordingOverlayView: NSView {
 
         for index in 0..<3 {
             let pulse = (sin(animationPhase * 2.2 - CGFloat(index) * 1.25) + 1) / 2
-            let radius: CGFloat = 2.2 + pulse * 1.5
-            let x = titleX + titleSize.width + 11 + CGFloat(index) * 8
-            NSColor.systemBlue.withAlphaComponent(0.48 + pulse * 0.52).setFill()
+            let radius: CGFloat = 1.6 + pulse * 1.1
+            let x = titleX + titleSize.width + 9 + CGFloat(index) * 6
+            NSColor.systemBlue.withAlphaComponent(0.42 + pulse * 0.5).setFill()
             NSBezierPath(ovalIn: NSRect(x: x - radius, y: bounds.midY - radius, width: radius * 2, height: radius * 2)).fill()
         }
     }
 
-    private func drawFeedback(symbol: String, color: NSColor) {
-        let circle = NSRect(x: bounds.midX - 15, y: bounds.midY - 15, width: 30, height: 30)
-        color.setFill()
-        NSBezierPath(ovalIn: circle).fill()
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 20, weight: .bold),
-            .foregroundColor: NSColor.white,
-        ]
-        let size = (symbol as NSString).size(withAttributes: attributes)
-        (symbol as NSString).draw(
-            at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2 - 1),
-            withAttributes: attributes
-        )
-    }
-
     private func startAnimatingIfNeeded() {
-        guard state == .recording || state == .processing else {
-            stopAnimating()
-            return
-        }
         guard animationTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self else { return }
