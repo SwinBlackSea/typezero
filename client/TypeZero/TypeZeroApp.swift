@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 final class StatusBarItemView: NSView {
@@ -14,19 +13,34 @@ final class StatusBarItemView: NSView {
     }
 }
 
-@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
     private var model: AppModel!
     private var imageView: NSImageView!
-    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
+
+        // Register callback for icon updates
+        model.onStatusChanged = { [weak self] in
+            self?.updateIcon()
+        }
+
         setupStatusBar()
         setupPopover()
+    }
+
+    private func updateIcon() {
+        let iconName: String
+        switch model.phase {
+        case .recording: iconName = "waveform.circle.fill"
+        case .processing: iconName = "ellipsis.circle"
+        case .failure: iconName = "exclamationmark.circle"
+        default: iconName = "mic.circle"
+        }
+        imageView?.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
     }
 
     private func setupStatusBar() {
@@ -43,19 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusItem.view = containerView
-
-        model.$phase
-            .sink { [weak self] phase in
-                let iconName: String
-                switch phase {
-                case .recording: iconName = "waveform.circle.fill"
-                case .processing: iconName = "ellipsis.circle"
-                case .failure: iconName = "exclamationmark.circle"
-                default: iconName = "mic.circle"
-                }
-                self?.imageView.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
-            }
-            .store(in: &cancellables)
     }
 
     private func setupPopover() {

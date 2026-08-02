@@ -37,6 +37,12 @@ final class AppModel: ObservableObject {
     private let inserter = TextInserter()
     private let shortcutMonitor = ShortcutMonitor()
     private var processingTask: Task<Void, Never>?
+    var onStatusChanged: (() -> Void)?
+
+    private func setPhase(_ newPhase: Phase) {
+        phase = newPhase
+        onStatusChanged?()
+    }
 
     init() {
         serverURLText = UserDefaults.standard.string(forKey: Self.serverURLKey) ?? "http://127.0.0.1:8080"
@@ -55,7 +61,7 @@ final class AppModel: ObservableObject {
             self?.elapsedSeconds = Int(elapsed)
         }
         recorder.onLimitReached = { @MainActor [weak self] recording in
-            self?.phase = .processing
+            self?.setPhase(.processing)
             self?.process(recording)
         }
     }
@@ -100,10 +106,10 @@ final class AppModel: ObservableObject {
         guard !isProcessing else { return }
         if isRecording {
             guard let recording = recorder.stop() else {
-                phase = .failure("录音停止失败")
+                setPhase(.failure("录音停止失败"))
                 return
             }
-            phase = .processing
+            setPhase(.processing)
             process(recording)
             return
         }
@@ -111,9 +117,9 @@ final class AppModel: ObservableObject {
         do {
             try await recorder.start()
             elapsedSeconds = 0
-            phase = .recording
+            setPhase(.recording)
         } catch {
-            phase = .failure(error.localizedDescription)
+            setPhase(.failure(error.localizedDescription))
         }
     }
 
@@ -123,12 +129,12 @@ final class AppModel: ObservableObject {
     }
 
     func dismissRawText() {
-        phase = .idle
+        setPhase(.idle)
     }
 
     func resetStatus() {
         guard !isRecording && !isProcessing else { return }
-        phase = .idle
+        setPhase(.idle)
     }
 
     func requestAccessibilityPermission() {
@@ -158,14 +164,14 @@ final class AppModel: ObservableObject {
                 try Task.checkCancellation()
 
                 if response.warning != nil || response.finalText.isEmpty {
-                    self.phase = .rawTextAvailable(response.rawText)
+                    self.setPhase(.rawTextAvailable(response.rawText))
                     return
                 }
                 self.finishInsertion(response.finalText)
             } catch is CancellationError {
-                self.phase = .idle
+                self.setPhase(.idle)
             } catch {
-                self.phase = .failure(error.localizedDescription)
+                self.setPhase(.failure(error.localizedDescription))
             }
         }
     }
@@ -174,9 +180,9 @@ final class AppModel: ObservableObject {
         let result = inserter.insert(text)
         switch result {
         case .inserted:
-            phase = .success("已插入")
+            setPhase(.success("已插入"))
         case .copied:
-            phase = .success("无法直接插入，文字已复制")
+            setPhase(.success("无法直接插入，文字已复制"))
         }
     }
 
