@@ -35,9 +35,9 @@ enum ClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .configuration(let message), .server(let message): message
-        case .invalidRecording: "录音文件无效或超过 10 MB"
-        case .invalidResponse: "服务返回了无法解析的结果"
+        case .configuration(let message), .server(let message): return message
+        case .invalidRecording: return "录音文件无效或超过 10 MB"
+        case .invalidResponse: return "服务返回了无法解析的结果"
         }
     }
 }
