@@ -37,11 +37,11 @@ final class AppModel: ObservableObject {
     private let inserter = TextInserter()
     private let shortcutMonitor = ShortcutMonitor()
     private var processingTask: Task<Void, Never>?
-    var onStatusChanged: (() -> Void)?
+    var onStatusChanged: ((Phase) -> Void)?
 
     private func setPhase(_ newPhase: Phase) {
         phase = newPhase
-        onStatusChanged?()
+        onStatusChanged?(newPhase)
     }
 
     init() {

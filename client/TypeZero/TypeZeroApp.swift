@@ -23,18 +23,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
 
-        // Register callback for icon updates
-        model.onStatusChanged = { [weak self] in
-            self?.updateIcon()
+        // Callback receives phase value directly (no @MainActor access needed)
+        model.onStatusChanged = { [weak self] phase in
+            self?.updateIcon(for: phase)
         }
 
         setupStatusBar()
         setupPopover()
     }
 
-    private func updateIcon() {
+    private func updateIcon(for phase: AppModel.Phase) {
         let iconName: String
-        switch model.phase {
+        switch phase {
         case .recording: iconName = "waveform.circle.fill"
         case .processing: iconName = "ellipsis.circle"
         case .failure: iconName = "exclamationmark.circle"
