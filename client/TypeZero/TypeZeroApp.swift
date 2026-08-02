@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Update icon when recording state changes
         model.$phase
+            .receive(on: RunLoop.main)
             .sink { [weak self] phase in
                 let iconName: String
                 switch phase {
