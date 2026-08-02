@@ -47,14 +47,29 @@ struct SettingsView: View {
                     Text(PermissionManager.hasAccessibility ? "已允许" : "未允许")
                 }
                 HStack {
+                    Text("输入监控").foregroundColor(.secondary)
+                    Spacer()
+                    Text(PermissionManager.hasInputMonitoring ? "已允许" : "未允许")
+                }
+                Text("全局快捷键需要“输入监控”；向其他应用插入文字需要“辅助功能”。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
                     Button("麦克风设置") { model.openMicrophoneSettings() }
+                    Button("输入监控设置") { model.openInputMonitoringSettings() }
+                }
+                HStack {
                     Button("请求辅助功能权限") { model.requestAccessibilityPermission() }
-                    Button("刷新") { permissionRefresh = UUID() }
+                    Button("请求输入监控权限") { model.requestInputMonitoringPermission() }
+                    Button("刷新") {
+                        model.refreshShortcutMonitoring()
+                        permissionRefresh = UUID()
+                    }
                 }
             }
             .id(permissionRefresh)
         }
         .padding()
-        .frame(width: 520, height: 380)
+        .frame(width: 560, height: 460)
     }
 }

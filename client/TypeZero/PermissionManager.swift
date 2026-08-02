@@ -4,6 +4,7 @@ import ApplicationServices
 
 enum PermissionManager {
     static var hasAccessibility: Bool { AXIsProcessTrusted() }
+    static var hasInputMonitoring: Bool { CGPreflightListenEventAccess() }
 
     static var microphoneStatus: String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -19,8 +20,17 @@ enum PermissionManager {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
+    static func requestInputMonitoring() {
+        _ = CGRequestListenEventAccess()
+    }
+
     static func openMicrophoneSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    static func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else { return }
         NSWorkspace.shared.open(url)
     }
 }

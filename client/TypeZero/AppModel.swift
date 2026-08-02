@@ -153,6 +153,18 @@ final class AppModel: ObservableObject {
         PermissionManager.openMicrophoneSettings()
     }
 
+    func requestInputMonitoringPermission() {
+        PermissionManager.requestInputMonitoring()
+    }
+
+    func openInputMonitoringSettings() {
+        PermissionManager.openInputMonitoringSettings()
+    }
+
+    func refreshShortcutMonitoring() {
+        shortcutMonitor.start()
+    }
+
     private func process(_ recording: Recording) {
         processingTask?.cancel()
         processingTask = Task { [weak self] in

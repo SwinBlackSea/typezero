@@ -81,7 +81,7 @@ struct MenuContentView: View {
 
     private func openSettingsWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 500),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

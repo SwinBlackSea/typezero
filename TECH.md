@@ -18,8 +18,8 @@ macOS 客户端
 - 技术栈：Swift + SwiftUI，必要处使用 AppKit。
 - 系统要求：macOS 13 及以上；使用 XcodeGen 从 `client/project.yml` 生成 Xcode 工程。
 - 录音：AVFoundation，输出 16 kHz、单声道、32 kbps 的 M4A/AAC 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。
-- 快捷键：监听 macOS 全局键盘事件，优先尝试 Fn，并提供可配置组合键作为兼容方案。
-- 文字插入：Accessibility API；失败时回退到剪贴板或模拟粘贴。
+- 快捷键：监听 macOS 全局键盘事件，优先尝试 Fn，并提供可配置组合键作为兼容方案；全局监听需要“输入监控”权限。
+- 文字插入：Accessibility API；失败时回退到剪贴板或模拟粘贴，文字插入需要“辅助功能”权限。
 - 凭据：用户自带 Key 时保存到 macOS Keychain，禁止明文落盘。
 - 分发：Developer ID 签名并经 Apple 公证，以 DMG/ZIP 发布；首版不走 Mac App Store 沙盒。
 
