@@ -28,5 +28,6 @@ targets:
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: TypeZero/TypeZero.entitlements
         INFOPLIST_FILE: TypeZero/Info.plist
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: TypeZero 需要使用麦克风录制语音并转换为文字。
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
