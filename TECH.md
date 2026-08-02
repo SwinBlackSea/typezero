@@ -18,7 +18,7 @@ macOS 客户端
 - 技术栈：Swift + SwiftUI，必要处使用 AppKit。
 - 系统要求：macOS 12 及以上；当前开发环境固定为 macOS 12.6、Xcode 14.2、Swift 5.7 和 XcodeGen 2.42。使用 XcodeGen 从 `client/project.yml` 生成 Xcode 工程。
 - 录音：AVFoundation，输出 16 kHz、单声道、16-bit PCM 的 WAV 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。当前 Qwen3-ASR-Flash 的兼容接口不支持 M4A/MP4 容器，不能上传 AAC 封装的 `.m4a` 文件。
-- 快捷键：主线使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。`experiment/fn-event-tap` 分支仅针对 Fn 使用被动 `CGEventTap` 监听 `flagsChanged` 和 `Secondary Fn` 标志，不拦截系统事件；若创建失败则回退到 global monitor，必须在 macOS 12 真机验证后才可合并。
+- 快捷键：主线使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。`experiment/fn-event-tap` 分支仅针对 Fn 使用被动 `CGEventTap` 监听 `flagsChanged` 和 `Secondary Fn` 标志，不拦截系统事件；若 Fn 被 macOS 绑定为切换输入法，应用仍不能消除该系统行为。创建失败时回退到 global monitor，必须在 macOS 12 真机验证后才可合并。
 - 文字插入：先写入剪贴板，再通过 Accessibility API 模拟粘贴；模拟粘贴失败时保留剪贴板文字，文字插入需要“辅助功能”权限。
 - 悬浮反馈：录音和处理中使用同规格、不抢焦点的紧凑 `NSPanel` 悬浮胶囊展示；录音时保留白色、声音驱动的细波形，结束统一使用全局快捷键或菜单栏，不得抢走目标输入框焦点。成功和失败状态立即收起胶囊，改由菜单栏呈现结果。
 - 声音反馈：客户端在实际开始录音后合成并播放 `C → D`（`1 → 2`）双音，在实际停止并进入处理后播放 `C → F`（`1 → 4`）双音。使用内存生成的 WAV 交给 `NSSound` 播放，不引入音效资源；处理期间 `toggleRecording` 提前返回，因此不会更换胶囊或发声。
@@ -82,6 +82,7 @@ macOS 客户端
 - 客户端将音频转为单声道并压缩后上传，以降低带宽和延迟。
 - 设置请求大小、时长、超时和按客户端 IP 的频率限制；仅在配置可信代理网段后采信 `X-Forwarded-For`。供应商异常时快速失败。
 - 日志仅记录请求 ID、耗时、供应商和错误码，不记录音频、完整文字或 API Key。
+- 输入监控只判定配置的快捷键，Fn tap 为只读监听；辅助功能仅发送模拟 `Command + V`，不得读取键盘、剪贴板或其他应用 UI 内容。客户端仅将识别所需音频和结果文字发送到配置的服务地址。
 
 ## 模型结论
 

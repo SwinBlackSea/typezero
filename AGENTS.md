@@ -106,7 +106,7 @@ model.onStatusChanged = { phase in self.updateIcon(for: phase) }
 
 有了输入监控权限后，`addLocalMonitorForEvents` 和 `addGlobalMonitorForEvents` 会同时触发同一按键事件，导致录音状态冲突崩溃。**只用 globalMonitor**。
 
-`experiment/fn-event-tap` 分支是唯一例外：仅为验证 Fn 被系统映射时的兼容性，可用被动 `CGEventTap` 替换（不能叠加）Fn 的 global flags monitor。该 tap 必须使用 `listenOnly`，不得拦截或修改事件，创建失败时回退 global monitor；未经 macOS 12 真机验证不得合并到 `main`。
+`experiment/fn-event-tap` 分支是唯一例外：仅为验证 Fn 被系统映射时的兼容性，可用被动 `CGEventTap` 替换（不能叠加）Fn 的 global flags monitor。该 tap 必须使用 `listenOnly`，不得拦截或修改事件，创建失败时回退 global monitor；因此无法消除 macOS 已绑定的 Fn 输入法切换。未经 macOS 12 真机验证不得合并到 `main`。
 
 ### 规则 8：AppDelegate 里观察 model 状态变化，用回调不用 Combine
 
@@ -141,6 +141,12 @@ plutil -p TypeZero/Info.plist | grep NSMicrophoneUsageDescription
 - 辅助功能：通过模拟 `Command + V` 向其他应用粘贴文字。
 
 权限与当前 `TypeZero.app` 的路径和签名绑定。出现 Typeless 或旧 TypeZero 残留项时，删除旧项后重新添加当前构建出的 App；授权后重启客户端或刷新快捷键监听。
+
+### 规则 12：权限最小化与数据边界
+
+- 输入监控只可判断配置的快捷键；不得记录、持久化或上传其他按键内容。
+- 辅助功能只可模拟粘贴；不得读取剪贴板或查询、抓取其他应用的 UI 内容。
+- 录音与识别文字会发送到配置的服务；生产环境必须使用 HTTPS，日志不得记录音频、完整文字或 API Key。
 
 ## 后端环境
 
