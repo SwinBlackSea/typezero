@@ -30,7 +30,7 @@ struct SettingsView: View {
                         Text(shortcut.title).tag(shortcut)
                     }
                 }
-                Text("Fn 单键在部分键盘或系统设置下无法被全局监听，此时请选择组合键。")
+                Text("推荐 Control + Option + Space。Fn 单键在部分键盘或系统设置下无法被全局监听。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

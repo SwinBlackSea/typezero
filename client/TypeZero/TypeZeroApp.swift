@@ -19,13 +19,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var model: AppModel!
     private var imageView: NSImageView!
+    private var recordingOverlay: RecordingOverlayController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
+        recordingOverlay = RecordingOverlayController(
+            onCancel: { [weak self] in
+                Task { @MainActor in self?.model.cancelRecording() }
+            },
+            onStop: { [weak self] in
+                Task { @MainActor in await self?.model.toggleRecording() }
+            }
+        )
 
         // Callback receives phase value directly (no @MainActor access needed)
         model.onStatusChanged = { [weak self] phase in
             self?.updateIcon(for: phase)
+            self?.recordingOverlay.update(for: phase)
         }
 
         setupStatusBar()

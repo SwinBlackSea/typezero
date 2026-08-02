@@ -47,7 +47,7 @@ final class AppModel: ObservableObject {
     init() {
         serverURLText = UserDefaults.standard.string(forKey: Self.serverURLKey) ?? "http://127.0.0.1:8080"
         let savedShortcut = UserDefaults.standard.string(forKey: Self.shortcutKey)
-        shortcut = ShortcutChoice(rawValue: savedShortcut ?? "") ?? .function
+        shortcut = ShortcutChoice(rawValue: savedShortcut ?? "") ?? .controlOptionSpace
         dashscopeAPIKey = KeychainStore.string(for: "dashscope-api-key")
         deepSeekAPIKey = KeychainStore.string(for: "deepseek-api-key")
 
@@ -134,6 +134,14 @@ final class AppModel: ObservableObject {
 
     func resetStatus() {
         guard !isRecording && !isProcessing else { return }
+        setPhase(.idle)
+    }
+
+    func cancelRecording() {
+        guard isRecording else { return }
+        if let recording = recorder.stop() {
+            try? FileManager.default.removeItem(at: recording.url)
+        }
         setPhase(.idle)
     }
 
