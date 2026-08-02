@@ -27,5 +27,6 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: TypeZero/TypeZero.entitlements
+        INFOPLIST_FILE: TypeZero/Info.plist
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
