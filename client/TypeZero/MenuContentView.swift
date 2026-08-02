@@ -50,7 +50,7 @@ struct MenuContentView: View {
 
             HStack {
                 Button("设置…") {
-                    (NSApp.delegate as? AppDelegate)?.openSettings()
+                    openSettingsWindow()
                 }
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }
@@ -77,5 +77,20 @@ struct MenuContentView: View {
         case .idle:
             return AnyView(Image(systemName: "mic.circle.fill").foregroundStyle(.secondary))
         }
+    }
+
+    private func openSettingsWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 420),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "TypeZero 设置"
+        window.contentView = NSHostingView(rootView: SettingsView(model: model))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
