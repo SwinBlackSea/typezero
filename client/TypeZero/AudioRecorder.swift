@@ -61,7 +61,7 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
     }
