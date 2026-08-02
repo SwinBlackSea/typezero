@@ -24,8 +24,7 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     var onLimitReached: ((Recording) -> Void)?
 
     private var recorder: AVAudioRecorder?
-    private var timer: Timer?
-    // Leave headroom for the 250 ms timer interval and container metadata written on stop.
+    private var tickTask: Task<Void, Never>?
     private let maxDuration: TimeInterval = 299
     private let maxBytes: Int64 = (10 << 20) - (64 << 10)
 
@@ -58,8 +57,12 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             throw RecorderError.failedToStart
         }
         recorder = newRecorder
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async { self?.tick() }
+
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.tick()
+                try? await Task.sleep(for: .milliseconds(250))
+            }
         }
     }
 
@@ -68,8 +71,8 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         let duration = recorder.currentTime
         let url = recorder.url
         recorder.stop()
-        timer?.invalidate()
-        timer = nil
+        tickTask?.cancel()
+        tickTask = nil
         self.recorder = nil
 
         guard duration > 0 else {
