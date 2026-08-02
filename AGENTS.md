@@ -52,8 +52,11 @@ timer = Timer.scheduledTimer(...) { @MainActor [weak self] _ in
 }
 
 // ✅
-timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-    DispatchQueue.main.async { self?.tick() }
+tickTask = Task { [weak self] in
+    while !Task.isCancelled {
+        await self?.tick()
+        try? await Task.sleep(for: .milliseconds(250))
+    }
 }
 ```
 
