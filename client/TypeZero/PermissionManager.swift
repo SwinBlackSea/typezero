@@ -7,10 +7,10 @@ enum PermissionManager {
 
     static var microphoneStatus: String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: "已允许"
-        case .denied, .restricted: "未允许"
-        case .notDetermined: "尚未请求"
-        @unknown default: "未知"
+        case .authorized: return "已允许"
+        case .denied, .restricted: return "未允许"
+        case .notDetermined: return "尚未请求"
+        @unknown default: return "未知"
         }
     }
 

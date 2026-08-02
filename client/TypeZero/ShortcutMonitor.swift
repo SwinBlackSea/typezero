@@ -9,9 +9,9 @@ enum ShortcutChoice: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .function: "Fn 单键（实验性）"
-        case .controlOptionSpace: "Control + Option + Space"
-        case .commandShiftSpace: "Command + Shift + Space"
+        case .function: return "Fn 单键（实验性）"
+        case .controlOptionSpace: return "Control + Option + Space"
+        case .commandShiftSpace: return "Command + Shift + Space"
         }
     }
 }
