@@ -58,8 +58,8 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             throw RecorderError.failedToStart
         }
         recorder = newRecorder
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { @MainActor [weak self] _ in
-            self?.tick()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.tick() }
         }
     }
 
