@@ -15,6 +15,21 @@ enum PermissionManager {
         }
     }
 
+    /// Requests the two permissions that are needed after recording. These APIs
+    /// show Apple's own consent UI; the app cannot grant either permission itself.
+    static func requestInputMonitoringIfNeeded() {
+        guard !hasInputMonitoring else { return }
+        _ = CGRequestListenEventAccess()
+    }
+
+    static func requestAccessibilityIfNeeded() {
+        guard !hasAccessibility else { return }
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
     static func openMicrophoneSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
         NSWorkspace.shared.open(url)

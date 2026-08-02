@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
     private let inserter = TextInserter()
     private let shortcutMonitor = ShortcutMonitor()
     private var processingTask: Task<Void, Never>?
+    private var hasRequestedSystemPermissions = false
     var onStatusChanged: ((Phase) -> Void)?
     var onAudioLevelChanged: ((CGFloat) -> Void)?
 
@@ -119,6 +120,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        requestSystemPermissionsOnFirstRecording()
         do {
             try await recorder.start()
             elapsedSeconds = 0
@@ -165,6 +167,15 @@ final class AppModel: ObservableObject {
     func refreshShortcutMonitoring() {
         shortcutMonitor.start()
         permissionRevision = UUID()
+    }
+
+    private func requestSystemPermissionsOnFirstRecording() {
+        guard !hasRequestedSystemPermissions else { return }
+        hasRequestedSystemPermissions = true
+
+        PermissionManager.requestInputMonitoringIfNeeded()
+        PermissionManager.requestAccessibilityIfNeeded()
+        refreshShortcutMonitoring()
     }
 
     private func process(_ recording: Recording) {

@@ -31,6 +31,7 @@ macOS 客户端
 - `client/project.yml` 是 Info.plist 的唯一配置源。XcodeGen 会在生成工程时重写 `info.path` 指向的文件，因此 `NSMicrophoneUsageDescription`、`LSUIElement`、ATS 等所有自定义字段必须同时声明在 `info.properties`，不能只手动编辑 `client/TypeZero/Info.plist`。
 - 每次执行 `xcodegen generate` 后，构建前检查生成的 `TypeZero/Info.plist`，构建后检查 App 包内的 `Contents/Info.plist` 是否包含 `NSMicrophoneUsageDescription`；缺失时 macOS TCC 会在首次录音时直接终止进程。
 - 麦克风权限、输入监控权限和辅助功能权限相互独立。授权对象必须是当前实际运行的 `TypeZero.app`；更换构建路径、签名或残留的 Typeless/旧 TypeZero 条目时，应删除旧项并重新添加当前 App，再重启客户端或刷新监听。
+- 首次手动开始录音时，客户端调用 `CGRequestListenEventAccess()` 请求输入监控，并通过 `AXIsProcessTrustedWithOptions` 触发辅助功能的系统授权提示；录音器本身通过 `AVCaptureDevice.requestAccess(for: .audio)` 请求麦克风。前两项不能由应用自行授予，用户仍须在系统确认；为避免每次点击都反复打扰，这两项引导每次应用启动只触发一次。
 
 ## 后端
 
