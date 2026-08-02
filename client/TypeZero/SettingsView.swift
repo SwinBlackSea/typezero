@@ -36,8 +36,16 @@ struct SettingsView: View {
             }
 
             Section("权限") {
-                LabeledContent("麦克风", value: PermissionManager.microphoneStatus)
-                LabeledContent("辅助功能", value: PermissionManager.hasAccessibility ? "已允许" : "未允许")
+                HStack {
+                    Text("麦克风").foregroundColor(.secondary)
+                    Spacer()
+                    Text(PermissionManager.microphoneStatus)
+                }
+                HStack {
+                    Text("辅助功能").foregroundColor(.secondary)
+                    Spacer()
+                    Text(PermissionManager.hasAccessibility ? "已允许" : "未允许")
+                }
                 HStack {
                     Button("麦克风设置") { model.openMicrophoneSettings() }
                     Button("请求辅助功能权限") { model.requestAccessibilityPermission() }
@@ -46,7 +54,6 @@ struct SettingsView: View {
             }
             .id(permissionRefresh)
         }
-        .formStyle(.grouped)
         .padding()
         .frame(width: 520, height: 380)
     }
