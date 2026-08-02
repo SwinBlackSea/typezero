@@ -21,6 +21,7 @@ enum RecorderError: LocalizedError {
 @MainActor
 final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     var onElapsed: ((TimeInterval) -> Void)?
+    var onAudioLevel: ((CGFloat) -> Void)?
     var onLimitReached: ((Recording) -> Void)?
 
     private var recorder: AVAudioRecorder?
@@ -61,7 +62,7 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                try? await Task.sleep(nanoseconds: 80_000_000)
             }
         }
     }
@@ -86,6 +87,11 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         guard let recorder else { return }
         let elapsed = recorder.currentTime
         onElapsed?(elapsed)
+
+        recorder.updateMeters()
+        let power = recorder.averagePower(forChannel: 0)
+        let normalizedLevel = max(0, min(1, (power + 52) / 52))
+        onAudioLevel?(CGFloat(sqrt(normalizedLevel)))
 
         let size = (try? recorder.url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
         if elapsed >= maxDuration || size >= maxBytes {

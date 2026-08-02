@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
     private let shortcutMonitor = ShortcutMonitor()
     private var processingTask: Task<Void, Never>?
     var onStatusChanged: ((Phase) -> Void)?
+    var onAudioLevelChanged: ((CGFloat) -> Void)?
 
     private func setPhase(_ newPhase: Phase) {
         phase = newPhase
@@ -59,6 +60,9 @@ final class AppModel: ObservableObject {
 
         recorder.onElapsed = { @MainActor [weak self] elapsed in
             self?.elapsedSeconds = Int(elapsed)
+        }
+        recorder.onAudioLevel = { @MainActor [weak self] level in
+            self?.onAudioLevelChanged?(level)
         }
         recorder.onLimitReached = { @MainActor [weak self] recording in
             self?.setPhase(.processing)

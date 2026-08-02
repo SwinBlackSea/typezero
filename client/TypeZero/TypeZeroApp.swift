@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateIcon(for: phase)
             self?.recordingOverlay.update(for: phase)
         }
+        model.onAudioLevelChanged = { [weak self] level in
+            self?.recordingOverlay.updateAudioLevel(level)
+        }
 
         setupStatusBar()
         setupPopover()
