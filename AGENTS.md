@@ -47,13 +47,13 @@ case .success(let msg): return msg
 
 ```swift
 // ❌ 编译失败
-timer = Timer.scheduledTimer(...) { [weak self] _ in
-    Task { @MainActor in self?.tick() }
+timer = Timer.scheduledTimer(...) { @MainActor [weak self] _ in
+    self?.tick()
 }
 
 // ✅
-timer = Timer.scheduledTimer(...) { @MainActor [weak self] _ in
-    self?.tick()
+timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+    DispatchQueue.main.async { self?.tick() }
 }
 ```
 
