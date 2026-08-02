@@ -62,6 +62,31 @@ type dictationResponse struct {
 	Warning   *warning `json:"warning,omitempty"`
 }
 
+// requestTimings contains only elapsed times. It deliberately carries no
+// audio, transcript, credential, or other request content.
+type requestTimings struct {
+	intake    time.Duration
+	asr       time.Duration
+	polish    time.Duration
+	asrRan    bool
+	polishRan bool
+}
+
+func (t requestTimings) serverTiming() string {
+	parts := []string{fmt.Sprintf("intake;dur=%.3f", durationMilliseconds(t.intake))}
+	if t.asrRan {
+		parts = append(parts, fmt.Sprintf("asr;dur=%.3f", durationMilliseconds(t.asr)))
+	}
+	if t.polishRan {
+		parts = append(parts, fmt.Sprintf("polish;dur=%.3f", durationMilliseconds(t.polish)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func durationMilliseconds(value time.Duration) float64 {
+	return float64(value.Microseconds()) / 1000
+}
+
 func New(deps Dependencies) http.Handler {
 	api := &API{
 		speech:         deps.Speech,
@@ -92,11 +117,13 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := newRequestID()
 	w.Header().Set("X-Request-ID", requestID)
+	timings := requestTimings{}
 
 	if !a.limiter.allow(a.clientIP(r)) {
 		w.Header().Set("Retry-After", "60")
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "请求过于频繁，请稍后重试")
-		a.log(requestID, started, "rate_limited", nil)
+		a.log(requestID, started, timings, "rate_limited", nil)
 		return
 	}
 
@@ -104,8 +131,10 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	r = r.WithContext(ctx)
 	r.Body = http.MaxBytesReader(w, r.Body, a.maxAudioBytes+(1<<20))
+	intakeStarted := time.Now()
 
 	if err := r.ParseMultipartForm(a.maxAudioBytes); err != nil {
+		timings.intake = time.Since(intakeStarted)
 		status := http.StatusBadRequest
 		code := "invalid_multipart"
 		message := "请求必须是有效的 multipart/form-data"
@@ -113,8 +142,9 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &maxErr) {
 			status, code, message = http.StatusRequestEntityTooLarge, "audio_too_large", "音频不得超过 10 MB"
 		}
+		a.writeTimingHeader(w, timings)
 		a.fail(w, status, code, message)
-		a.log(requestID, started, code, err)
+		a.log(requestID, started, timings, code, err)
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
@@ -124,62 +154,84 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		mode = "polished"
 	}
 	if mode != "polished" && mode != "raw" {
+		timings.intake = time.Since(intakeStarted)
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusBadRequest, "invalid_output_mode", "output_mode 仅支持 polished 或 raw")
-		a.log(requestID, started, "invalid_output_mode", nil)
+		a.log(requestID, started, timings, "invalid_output_mode", nil)
 		return
 	}
 
 	audio, info, err := a.readAudio(r)
 	if err != nil {
+		timings.intake = time.Since(intakeStarted)
 		var clientErr *clientError
 		if errors.As(err, &clientErr) {
+			a.writeTimingHeader(w, timings)
 			a.fail(w, clientErr.status, clientErr.code, clientErr.message)
-			a.log(requestID, started, clientErr.code, err)
+			a.log(requestID, started, timings, clientErr.code, err)
 			return
 		}
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusInternalServerError, "internal_error", "服务暂时不可用")
-		a.log(requestID, started, "internal_error", err)
+		a.log(requestID, started, timings, "internal_error", err)
 		return
 	}
 	if info.Duration > a.maxDuration {
+		timings.intake = time.Since(intakeStarted)
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusUnprocessableEntity, "audio_too_long", "音频不得超过 5 分钟")
-		a.log(requestID, started, "audio_too_long", nil)
+		a.log(requestID, started, timings, "audio_too_long", nil)
 		return
 	}
 
 	declaredDuration, err := parseDeclaredDuration(r.FormValue("duration_ms"))
 	if err != nil {
+		timings.intake = time.Since(intakeStarted)
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusBadRequest, "invalid_duration", "duration_ms 必须是正整数")
-		a.log(requestID, started, "invalid_duration", err)
+		a.log(requestID, started, timings, "invalid_duration", err)
 		return
 	}
 	if declaredDuration > a.maxDuration {
+		timings.intake = time.Since(intakeStarted)
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusUnprocessableEntity, "audio_too_long", "音频不得超过 5 分钟")
-		a.log(requestID, started, "audio_too_long", nil)
+		a.log(requestID, started, timings, "audio_too_long", nil)
 		return
 	}
 
 	speech, text, err := a.providersForRequest(r)
 	if err != nil {
+		timings.intake = time.Since(intakeStarted)
+		a.writeTimingHeader(w, timings)
 		a.fail(w, http.StatusBadRequest, "invalid_api_key", "模型 API Key 格式无效")
-		a.log(requestID, started, "invalid_api_key", nil)
+		a.log(requestID, started, timings, "invalid_api_key", nil)
 		return
 	}
+	timings.intake = time.Since(intakeStarted)
 
+	timings.asrRan = true
+	asrStarted := time.Now()
 	rawText, err := speech.Transcribe(ctx, audio)
+	timings.asr = time.Since(asrStarted)
 	if err != nil {
 		status, code := providerFailure(ctx, "transcription_failed")
+		a.writeTimingHeader(w, timings)
 		a.fail(w, status, code, "语音识别失败，请重试")
-		a.log(requestID, started, code, err)
+		a.log(requestID, started, timings, code, err)
 		return
 	}
 	if mode == "raw" {
+		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: rawText})
-		a.log(requestID, started, "ok_raw", nil)
+		a.log(requestID, started, timings, "ok_raw", nil)
 		return
 	}
 
+	timings.polishRan = true
+	polishStarted := time.Now()
 	finalText, err := text.Polish(ctx, rawText)
+	timings.polish = time.Since(polishStarted)
 	if err != nil {
 		response := dictationResponse{
 			RequestID: requestID,
@@ -189,13 +241,15 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 				Message: "润色失败，可使用原始识别文字",
 			},
 		}
+		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, response)
-		a.log(requestID, started, "polishing_failed", err)
+		a.log(requestID, started, timings, "polishing_failed", err)
 		return
 	}
 
+	a.writeTimingHeader(w, timings)
 	writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: finalText})
-	a.log(requestID, started, "ok", nil)
+	a.log(requestID, started, timings, "ok", nil)
 }
 
 func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Text, error) {
@@ -301,8 +355,19 @@ func (a *API) fail(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message}})
 }
 
-func (a *API) log(requestID string, started time.Time, outcome string, err error) {
-	attrs := []any{"request_id", requestID, "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome}
+func (a *API) writeTimingHeader(w http.ResponseWriter, timings requestTimings) {
+	w.Header().Set("Server-Timing", timings.serverTiming())
+}
+
+func (a *API) log(requestID string, started time.Time, timings requestTimings, outcome string, err error) {
+	attrs := []any{
+		"request_id", requestID,
+		"duration_ms", time.Since(started).Milliseconds(),
+		"intake_ms", timings.intake.Milliseconds(),
+		"asr_ms", timings.asr.Milliseconds(),
+		"polish_ms", timings.polish.Milliseconds(),
+		"outcome", outcome,
+	}
 	if err != nil {
 		attrs = append(attrs, "error", err.Error())
 	}

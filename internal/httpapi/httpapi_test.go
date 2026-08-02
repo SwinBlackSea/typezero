@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,11 @@ func TestDictationSuccess(t *testing.T) {
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("missing no-store header")
+	}
+	for _, metric := range []string{"intake;dur=", "asr;dur=", "polish;dur="} {
+		if !strings.Contains(response.Header().Get("Server-Timing"), metric) {
+			t.Fatalf("Server-Timing = %q, missing %q", response.Header().Get("Server-Timing"), metric)
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var elapsedSeconds: Int = 0
     @Published private(set) var permissionRevision = UUID()
+    @Published private(set) var lastProcessingTiming: ProcessingTiming?
     @Published var serverURLText: String {
         didSet { UserDefaults.standard.set(serverURLText, forKey: Self.serverURLKey) }
     }
@@ -126,6 +127,7 @@ final class AppModel: ObservableObject {
         do {
             try await recorder.start()
             elapsedSeconds = 0
+            lastProcessingTiming = nil
             setPhase(.recording)
             feedbackTonePlayer.playStart()
         } catch {
@@ -194,10 +196,12 @@ final class AppModel: ObservableObject {
                     dashscopeAPIKey: self.dashscopeAPIKey,
                     deepSeekAPIKey: self.deepSeekAPIKey
                 )
-                let response = try await Task.detached(priority: .userInitiated) {
+                let result = try await Task.detached(priority: .userInitiated) {
                     try await client.upload(recording: recording)
                 }.value
                 try Task.checkCancellation()
+                let response = result.response
+                self.lastProcessingTiming = result.timing
 
                 if response.warning != nil || response.finalText.isEmpty {
                     self.setPhase(.rawTextAvailable(response.rawText))

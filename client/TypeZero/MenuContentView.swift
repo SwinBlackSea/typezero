@@ -14,6 +14,12 @@ struct MenuContentView: View {
                     Text(model.shortcut.title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let timing = model.lastProcessingTiming {
+                        Text(timing.summary)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer()
             }

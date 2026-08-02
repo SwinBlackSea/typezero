@@ -19,6 +19,38 @@ struct DictationResponse: Decodable, Sendable {
     }
 }
 
+struct DictationUploadResult: Sendable {
+    let response: DictationResponse
+    let timing: ProcessingTiming
+}
+
+struct ProcessingTiming: Sendable {
+    let preparationMilliseconds: Int
+    let requestMilliseconds: Int
+    let intakeMilliseconds: Int?
+    let asrMilliseconds: Int?
+    let polishMilliseconds: Int?
+
+    var summary: String {
+        var parts = ["请求 \(formattedSeconds(requestMilliseconds))"]
+        parts.append("准备 \(formattedSeconds(preparationMilliseconds))")
+        if let intakeMilliseconds {
+            parts.append("接收 \(formattedSeconds(intakeMilliseconds))")
+        }
+        if let asrMilliseconds {
+            parts.append("识别 \(formattedSeconds(asrMilliseconds))")
+        }
+        if let polishMilliseconds {
+            parts.append("润色 \(formattedSeconds(polishMilliseconds))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func formattedSeconds(_ milliseconds: Int) -> String {
+        String(format: "%.1f 秒", Double(milliseconds) / 1000)
+    }
+}
+
 private struct ErrorEnvelope: Decodable {
     struct APIError: Decodable {
         let code: String
@@ -47,7 +79,8 @@ struct DictationClient: Sendable {
     let dashscopeAPIKey: String
     let deepSeekAPIKey: String
 
-    func upload(recording: Recording) async throws -> DictationResponse {
+    func upload(recording: Recording) async throws -> DictationUploadResult {
+        let preparationStarted = Date()
         let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
         guard !audio.isEmpty, audio.count <= 10 << 20, recording.durationMilliseconds <= 5 * 60 * 1000 else {
             throw ClientError.invalidRecording
@@ -73,10 +106,21 @@ struct DictationClient: Sendable {
             request.setValue(deepSeekAPIKey, forHTTPHeaderField: "X-TypeZero-DeepSeek-Key")
         }
 
+        let preparationMilliseconds = elapsedMilliseconds(since: preparationStarted)
+        let requestStarted = Date()
         let (data, response) = try await URLSession.shared.data(for: request)
+        let requestMilliseconds = elapsedMilliseconds(since: requestStarted)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClientError.invalidResponse
         }
+        let serverTiming = ServerTiming.parse(httpResponse.value(forHTTPHeaderField: "Server-Timing"))
+        let timing = ProcessingTiming(
+            preparationMilliseconds: preparationMilliseconds,
+            requestMilliseconds: requestMilliseconds,
+            intakeMilliseconds: serverTiming.intakeMilliseconds,
+            asrMilliseconds: serverTiming.asrMilliseconds,
+            polishMilliseconds: serverTiming.polishMilliseconds
+        )
         guard (200..<300).contains(httpResponse.statusCode) else {
             if let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data) {
                 throw ClientError.server(envelope.error.message)
@@ -86,8 +130,48 @@ struct DictationClient: Sendable {
         guard let decoded = try? JSONDecoder().decode(DictationResponse.self, from: data) else {
             throw ClientError.invalidResponse
         }
-        return decoded
+        return DictationUploadResult(response: decoded, timing: timing)
     }
+}
+
+private struct ServerTiming {
+    let intakeMilliseconds: Int?
+    let asrMilliseconds: Int?
+    let polishMilliseconds: Int?
+
+    static func parse(_ header: String?) -> ServerTiming {
+        guard let header, !header.isEmpty else {
+            return ServerTiming(intakeMilliseconds: nil, asrMilliseconds: nil, polishMilliseconds: nil)
+        }
+
+        var values: [String: Int] = [:]
+        for item in header.split(separator: ",") {
+            let attributes = item.split(separator: ";")
+            guard let rawName = attributes.first else { continue }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            for rawAttribute in attributes.dropFirst() {
+                let pair = rawAttribute.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard pair.count == 2,
+                      pair[0].trimmingCharacters(in: .whitespacesAndNewlines) == "dur",
+                      let duration = Double(pair[1].trimmingCharacters(in: .whitespacesAndNewlines)),
+                      duration >= 0 else {
+                    continue
+                }
+                values[String(name)] = Int(duration.rounded())
+            }
+        }
+
+        return ServerTiming(
+            intakeMilliseconds: values["intake"],
+            asrMilliseconds: values["asr"],
+            polishMilliseconds: values["polish"]
+        )
+    }
+}
+
+private func elapsedMilliseconds(since started: Date) -> Int {
+    max(0, Int(Date().timeIntervalSince(started) * 1000))
 }
 
 private extension Data {
