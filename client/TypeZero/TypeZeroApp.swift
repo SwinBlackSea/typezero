@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("AppModel created")
         setupStatusBar()
         print("StatusBar setup complete")
+        setupPopover()
+        print("Popover setup complete")
     }
 
     private func setupStatusBar() {
@@ -22,26 +24,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         button.image = NSImage(systemSymbolName: "mic.circle", accessibilityDescription: "TypeZero")
-        button.action = #selector(togglePopover)
         button.target = self
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        print("Button configured: \(button.frame)")
-
-        let contentView = MenuContentView(model: model)
-        popover = NSPopover()
-        popover.contentSize = NSSize(width: 350, height: 300)
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: contentView)
-        print("Popover setup complete")
+        button.action = #selector(statusBarClicked)
+        button.sendAction(on: [.leftMouseDown, .leftMouseUp, .rightMouseDown])
+        print("Button configured")
     }
 
-    @objc private func togglePopover() {
-        print("togglePopover called, isShown=\(popover?.isShown ?? false)")
-        guard let button = statusItem?.button else { return }
+    private func setupPopover() {
+        popover = NSPopover()
+        popover.contentSize = NSSize(width: 350, height: 320)
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(
+            rootView: MenuContentView(model: model)
+        )
+    }
+
+    @objc private func statusBarClicked(_ sender: NSStatusBarButton) {
+        print("statusBarClicked, isShown=\(popover?.isShown ?? false)")
+        guard let event = NSApp.currentEvent else { return }
         if popover.isShown {
-            popover.performClose(nil)
+            popover.performClose(sender)
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }
 
