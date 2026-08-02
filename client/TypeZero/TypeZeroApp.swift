@@ -8,28 +8,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        print("AppDelegate.applicationDidFinishLaunching")
         model = AppModel()
+        print("AppModel created")
         setupStatusBar()
+        print("StatusBar setup complete")
     }
 
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "mic.circle", accessibilityDescription: "TypeZero")
-            button.action = #selector(togglePopover)
-            button.target = self
+        guard let button = statusItem.button else {
+            print("ERROR: statusItem.button is nil")
+            return
         }
+        button.image = NSImage(systemSymbolName: "mic.circle", accessibilityDescription: "TypeZero")
+        button.action = #selector(togglePopover)
+        button.target = self
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        print("Button configured: \(button.frame)")
 
+        let contentView = MenuContentView(model: model)
         popover = NSPopover()
         popover.contentSize = NSSize(width: 350, height: 300)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(
-            rootView: MenuContentView(model: model)
-        )
+        popover.contentViewController = NSHostingController(rootView: contentView)
+        print("Popover setup complete")
     }
 
     @objc private func togglePopover() {
-        guard let button = statusItem.button else { return }
+        print("togglePopover called, isShown=\(popover?.isShown ?? false)")
+        guard let button = statusItem?.button else { return }
         if popover.isShown {
             popover.performClose(nil)
         } else {
