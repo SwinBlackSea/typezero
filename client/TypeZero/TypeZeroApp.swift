@@ -14,6 +14,7 @@ final class StatusBarItemView: NSView {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
@@ -43,9 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem.view = containerView
 
-        // Update icon when recording state changes
         model.$phase
-            .receive(on: RunLoop.main)
             .sink { [weak self] phase in
                 let iconName: String
                 switch phase {
