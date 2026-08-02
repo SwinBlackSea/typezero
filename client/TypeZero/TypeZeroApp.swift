@@ -1,14 +1,15 @@
 import AppKit
 import SwiftUI
 
-struct StatusBarIconView: View {
-    var model: AppModel
-    var onTap: () -> Void
+final class StatusBarItemView: NSView {
+    var onMouseUp: (() -> Void)?
 
-    var body: some View {
-        Image(systemName: "mic.circle")
-            .font(.system(size: 18))
-            .onTapGesture { onTap() }
+    override func mouseDown(with event: NSEvent) {
+        onMouseUp?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onMouseUp?()
     }
 }
 
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
     private var model: AppModel!
+    private var imageView: NSImageView!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("AppDelegate.applicationDidFinishLaunching")
@@ -28,13 +30,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
-        let iconView = StatusBarIconView(model: model, onTap: { [weak self] in
+        let icon = NSImage(systemSymbolName: "mic.circle", accessibilityDescription: "TypeZero")!
+        imageView = NSImageView(image: icon)
+        imageView.frame = NSRect(x: 0, y: 0, width: 24, height: 22)
+
+        let containerView = StatusBarItemView()
+        containerView.frame = NSRect(x: 0, y: 0, width: 30, height: 22)
+        containerView.addSubview(imageView)
+        containerView.onMouseUp = { [weak self] in
             self?.togglePopover()
-        })
-        let hosting = NSHostingView(rootView: iconView)
-        hosting.frame = NSRect(x: 0, y: 0, width: 30, height: 22)
-        statusItem.view = hosting
-        print("Status bar with custom view set up")
+        }
+
+        statusItem.view = containerView
+        print("Status bar set up with custom NSView")
     }
 
     private func setupPopover() {
@@ -48,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePopover() {
-        print("togglePopover called, isShown=\(popover?.isShown ?? false)")
+        print("togglePopover called! isShown=\(popover?.isShown ?? false)")
         guard let view = statusItem.view else { return }
         if popover.isShown {
             popover.performClose(nil)
