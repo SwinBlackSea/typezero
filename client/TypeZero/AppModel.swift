@@ -69,21 +69,21 @@ final class AppModel: ObservableObject {
 
     var menuBarIcon: String {
         switch phase {
-        case .recording: "waveform.circle.fill"
-        case .processing: "ellipsis.circle"
-        case .failure: "exclamationmark.circle"
-        default: "mic.circle"
+        case .recording: return "waveform.circle.fill"
+        case .processing: return "ellipsis.circle"
+        case .failure: return "exclamationmark.circle"
+        default: return "mic.circle"
         }
     }
 
     var statusTitle: String {
         switch phase {
-        case .idle: "就绪"
-        case .recording: "正在录音 \(formattedElapsed)"
-        case .processing: "正在识别和整理…"
-        case .success(let message): message
-        case .failure(let message): message
-        case .rawTextAvailable: "润色失败"
+        case .idle: return "就绪"
+        case .recording: return "正在录音 \(formattedElapsed)"
+        case .processing: return "正在识别和整理…"
+        case .success(let message): return message
+        case .failure(let message): return message
+        case .rawTextAvailable: return "润色失败"
         }
     }
 

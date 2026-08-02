@@ -12,8 +12,8 @@ enum RecorderError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .microphoneDenied: "请在系统设置中允许 TypeZero 使用麦克风"
-        case .failedToStart: "无法开始录音，请检查麦克风"
+        case .microphoneDenied: return "请在系统设置中允许 TypeZero 使用麦克风"
+        case .failedToStart: return "无法开始录音，请检查麦克风"
         }
     }
 }
