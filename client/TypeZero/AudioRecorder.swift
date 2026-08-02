@@ -41,13 +41,14 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typezero-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
+            .appendingPathExtension("wav")
         let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsFloatKey: false,
         ]
 
         let newRecorder = try AVAudioRecorder(url: url, settings: settings)
@@ -119,7 +120,7 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return }
-        for file in files where file.lastPathComponent.hasPrefix("typezero-") && file.pathExtension == "m4a" {
+        for file in files where file.lastPathComponent.hasPrefix("typezero-") && (file.pathExtension == "m4a" || file.pathExtension == "wav") {
             try? FileManager.default.removeItem(at: file)
         }
     }

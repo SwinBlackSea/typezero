@@ -23,14 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
-        recordingOverlay = RecordingOverlayController(
-            onCancel: { [weak self] in
-                Task { @MainActor in self?.model.cancelRecording() }
-            },
-            onStop: { [weak self] in
-                Task { @MainActor in await self?.model.toggleRecording() }
-            }
-        )
+        recordingOverlay = RecordingOverlayController()
 
         // Callback receives phase value directly (no @MainActor access needed)
         model.onStatusChanged = { [weak self] phase in

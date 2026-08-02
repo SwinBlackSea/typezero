@@ -17,10 +17,11 @@ macOS 客户端
 
 - 技术栈：Swift + SwiftUI，必要处使用 AppKit。
 - 系统要求：macOS 12 及以上；当前开发环境固定为 macOS 12.6、Xcode 14.2、Swift 5.7 和 XcodeGen 2.42。使用 XcodeGen 从 `client/project.yml` 生成 Xcode 工程。
-- 录音：AVFoundation，输出 16 kHz、单声道、32 kbps 的 M4A/AAC 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。
-- 快捷键：使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。
+- 录音：AVFoundation，输出 16 kHz、单声道、16-bit PCM 的 WAV 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。当前 Qwen3-ASR-Flash 的兼容接口不支持 M4A/MP4 容器，不能上传 AAC 封装的 `.m4a` 文件。
+- 快捷键：主线使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。`experiment/fn-event-tap` 分支仅针对 Fn 使用被动 `CGEventTap` 监听 `flagsChanged` 和 `Secondary Fn` 标志，不拦截系统事件；若 Fn 被 macOS 绑定为切换输入法，应用仍不能消除该系统行为。创建失败时回退到 global monitor，必须在 macOS 12 真机验证后才可合并。
 - 文字插入：先写入剪贴板，再通过 Accessibility API 模拟粘贴；模拟粘贴失败时保留剪贴板文字，文字插入需要“辅助功能”权限。
-- 悬浮反馈：录音、处理中、成功和失败状态使用不抢焦点的 `NSPanel` 悬浮胶囊展示；录音时可点击取消或结束，不得抢走目标输入框焦点。
+- 悬浮反馈：录音和处理中使用同规格、不抢焦点的紧凑 `NSPanel` 悬浮胶囊展示；录音时保留白色、声音驱动的细波形，结束统一使用全局快捷键或菜单栏，不得抢走目标输入框焦点。成功和失败状态立即收起胶囊，改由菜单栏呈现结果。
+- 声音反馈：客户端在实际开始录音后合成并播放 `C → D`（`1 → 2`）双音，在实际停止并进入处理后播放 `C → F`（`1 → 4`）双音。使用内存生成的 WAV 交给 `NSSound` 播放，不引入音效资源；处理期间 `toggleRecording` 提前返回，因此不会更换胶囊或发声。
 - 凭据：用户自带 Key 时保存到 macOS Keychain，禁止明文落盘。
 - 分发：Developer ID 签名并经 Apple 公证，以 DMG/ZIP 发布；首版不走 Mac App Store 沙盒。
 
@@ -31,6 +32,7 @@ macOS 客户端
 - `client/project.yml` 是 Info.plist 的唯一配置源。XcodeGen 会在生成工程时重写 `info.path` 指向的文件，因此 `NSMicrophoneUsageDescription`、`LSUIElement`、ATS 等所有自定义字段必须同时声明在 `info.properties`，不能只手动编辑 `client/TypeZero/Info.plist`。
 - 每次执行 `xcodegen generate` 后，构建前检查生成的 `TypeZero/Info.plist`，构建后检查 App 包内的 `Contents/Info.plist` 是否包含 `NSMicrophoneUsageDescription`；缺失时 macOS TCC 会在首次录音时直接终止进程。
 - 麦克风权限、输入监控权限和辅助功能权限相互独立。授权对象必须是当前实际运行的 `TypeZero.app`；更换构建路径、签名或残留的 Typeless/旧 TypeZero 条目时，应删除旧项并重新添加当前 App，再重启客户端或刷新监听。
+- 首次手动开始录音时，客户端调用 `CGRequestListenEventAccess()` 请求输入监控，并通过 `AXIsProcessTrustedWithOptions` 触发辅助功能的系统授权提示；录音器本身通过 `AVCaptureDevice.requestAccess(for: .audio)` 请求麦克风。前两项不能由应用自行授予，用户仍须在系统确认；为避免每次点击都反复打扰，这两项引导每次应用启动只触发一次。
 
 ## 后端
 
@@ -45,7 +47,7 @@ macOS 客户端
 
 `GET /healthz` 用于健康检查。`POST /v1/dictations` 使用 `multipart/form-data`，字段如下：
 
-- `audio`：必填，M4A/MP4(AAC) 或 WAV 文件。
+- `audio`：必填，WAV 文件；当前默认 Qwen3-ASR-Flash 仅接受此格式，以避免模型对 M4A/MP4 容器的静默误识别。
 - `duration_ms`：必填，客户端测得的正整数毫秒数；服务端同时解析音频本身的时长。
 - `output_mode`：可选，`polished`（默认）或 `raw`；`raw` 跳过文字润色。
 
@@ -80,6 +82,7 @@ macOS 客户端
 - 客户端将音频转为单声道并压缩后上传，以降低带宽和延迟。
 - 设置请求大小、时长、超时和按客户端 IP 的频率限制；仅在配置可信代理网段后采信 `X-Forwarded-For`。供应商异常时快速失败。
 - 日志仅记录请求 ID、耗时、供应商和错误码，不记录音频、完整文字或 API Key。
+- 输入监控只判定配置的快捷键，Fn tap 为只读监听；辅助功能仅发送模拟 `Command + V`，不得读取键盘、剪贴板或其他应用 UI 内容。客户端仅将识别所需音频和结果文字发送到配置的服务地址。
 
 ## 模型结论
 
