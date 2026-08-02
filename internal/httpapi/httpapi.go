@@ -255,6 +255,9 @@ func (a *API) readAudio(r *http.Request) (provider.Audio, audioinfo.Info, error)
 		}
 		return provider.Audio{}, audioinfo.Info{}, &clientError{http.StatusUnprocessableEntity, "invalid_audio", "音频文件已损坏或缺少时长信息"}
 	}
+	if info.MediaType != "audio/wav" {
+		return provider.Audio{}, audioinfo.Info{}, &clientError{http.StatusUnsupportedMediaType, "unsupported_audio", "当前识别模型仅支持 WAV 音频"}
+	}
 	return provider.Audio{Data: data, MediaType: info.MediaType, Filename: header.Filename}, info, nil
 }
 

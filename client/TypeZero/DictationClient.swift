@@ -57,7 +57,7 @@ struct DictationClient: Sendable {
         var body = Data()
         body.appendField(name: "duration_ms", value: String(recording.durationMilliseconds), boundary: boundary)
         body.appendField(name: "output_mode", value: "polished", boundary: boundary)
-        body.appendFile(name: "audio", filename: "recording.m4a", contentType: "audio/mp4", data: audio, boundary: boundary)
+        body.appendFile(name: "audio", filename: "recording.wav", contentType: "audio/wav", data: audio, boundary: boundary)
         body.append("--\(boundary)--\r\n")
 
         var request = URLRequest(url: endpoint)

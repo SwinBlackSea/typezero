@@ -24,7 +24,7 @@ func TestTranscribe(t *testing.T) {
 			t.Errorf("model = %v", payload["model"])
 		}
 		encoded, _ := json.Marshal(payload)
-		if !strings.Contains(string(encoded), "data:audio/mp4;base64,AQID") {
+		if !strings.Contains(string(encoded), "data:audio/wav;base64,AQID") {
 			t.Errorf("audio data URL missing from %s", encoded)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -33,7 +33,7 @@ func TestTranscribe(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.Client(), server.URL, "secret", "qwen3-asr-flash")
-	got, err := client.Transcribe(context.Background(), provider.Audio{Data: []byte{1, 2, 3}, MediaType: "audio/mp4"})
+	got, err := client.Transcribe(context.Background(), provider.Audio{Data: []byte{1, 2, 3}, MediaType: "audio/wav"})
 	if err != nil {
 		t.Fatalf("Transcribe() error = %v", err)
 	}
