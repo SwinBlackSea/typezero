@@ -50,7 +50,7 @@ struct MenuContentView: View {
 
             HStack {
                 Button("设置…") {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    (NSApp.delegate as? AppDelegate)?.openSettings()
                 }
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }
@@ -62,21 +62,20 @@ struct MenuContentView: View {
         .frame(width: 330)
     }
 
-    @ViewBuilder
-    private var statusIcon: some View {
+    private var statusIcon: AnyView {
         switch model.phase {
         case .recording:
-            Image(systemName: "waveform.circle.fill").foregroundStyle(.red)
+            return AnyView(Image(systemName: "waveform.circle.fill").foregroundStyle(.red))
         case .processing:
-            ProgressView().controlSize(.small)
+            return AnyView(ProgressView().controlSize(.small))
         case .failure:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            return AnyView(Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange))
         case .success:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            return AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(.green))
         case .rawTextAvailable:
-            Image(systemName: "exclamationmark.bubble.fill").foregroundStyle(.orange)
+            return AnyView(Image(systemName: "exclamationmark.bubble.fill").foregroundStyle(.orange))
         case .idle:
-            Image(systemName: "mic.circle.fill").foregroundStyle(.secondary)
+            return AnyView(Image(systemName: "mic.circle.fill").foregroundStyle(.secondary))
         }
     }
 }

@@ -46,15 +46,15 @@ final class AppModel: ObservableObject {
         deepSeekAPIKey = KeychainStore.string(for: "deepseek-api-key")
 
         shortcutMonitor.choice = shortcut
-        shortcutMonitor.onTrigger = { [weak self] in
+        shortcutMonitor.onTrigger = { @MainActor [weak self] in
             Task { @MainActor in await self?.toggleRecording() }
         }
         shortcutMonitor.start()
 
-        recorder.onElapsed = { [weak self] elapsed in
+        recorder.onElapsed = { @MainActor [weak self] elapsed in
             self?.elapsedSeconds = Int(elapsed)
         }
-        recorder.onLimitReached = { [weak self] recording in
+        recorder.onLimitReached = { @MainActor [weak self] recording in
             self?.phase = .processing
             self?.process(recording)
         }
