@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 final class StatusBarItemView: NSView {
@@ -19,9 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var model: AppModel!
     private var imageView: NSImageView!
+    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("AppDelegate.applicationDidFinishLaunching")
         model = AppModel()
         setupStatusBar()
         setupPopover()
@@ -30,8 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
-        let icon = NSImage(systemSymbolName: "mic.circle", accessibilityDescription: "TypeZero")!
-        imageView = NSImageView(image: icon)
+        imageView = NSImageView(image: NSImage(systemSymbolName: "mic.circle", accessibilityDescription: nil)!)
         imageView.frame = NSRect(x: 0, y: 0, width: 24, height: 22)
 
         let containerView = StatusBarItemView()
@@ -42,7 +42,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusItem.view = containerView
-        print("Status bar set up with custom NSView")
+
+        // Update icon when recording state changes
+        model.$phase
+            .sink { [weak self] phase in
+                let iconName: String
+                switch phase {
+                case .recording: iconName = "waveform.circle.fill"
+                case .processing: iconName = "ellipsis.circle"
+                case .failure: iconName = "exclamationmark.circle"
+                default: iconName = "mic.circle"
+                }
+                self?.imageView.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+            }
+            .store(in: &cancellables)
     }
 
     private func setupPopover() {
@@ -52,11 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(
             rootView: MenuContentView(model: model)
         )
-        print("Popover set up")
     }
 
     private func togglePopover() {
-        print("togglePopover called! isShown=\(popover?.isShown ?? false)")
         guard let view = statusItem.view else { return }
         if popover.isShown {
             popover.performClose(nil)
