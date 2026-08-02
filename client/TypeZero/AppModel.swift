@@ -186,9 +186,7 @@ final class AppModel: ObservableObject {
               scheme == "https" || scheme == "http",
               components.host != nil else {
             throw ClientError.configuration("服务地址无效")
-        }
-        if scheme == "http", components.host != "127.0.0.1", components.host != "localhost" {
-            throw ClientError.configuration("远程服务必须使用 HTTPS")
+
         }
         components.path = "/v1/dictations"
         components.query = nil
