@@ -4,17 +4,14 @@ final class RecordingOverlayController {
     private let panel: NSPanel
     private let overlayView: RecordingOverlayView
 
-    init(onCancel: @escaping () -> Void, onStop: @escaping () -> Void) {
-        overlayView = RecordingOverlayView(frame: NSRect(x: 0, y: 0, width: 164, height: 44))
+    init() {
+        overlayView = RecordingOverlayView(frame: NSRect(x: 0, y: 0, width: 124, height: 36))
         panel = NSPanel(
             contentRect: overlayView.bounds,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        overlayView.onCancel = onCancel
-        overlayView.onStop = onStop
-
         panel.contentView = overlayView
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -87,11 +84,6 @@ private final class RecordingOverlayView: NSView {
             needsDisplay = true
         }
     }
-    var onCancel: (() -> Void)?
-    var onStop: (() -> Void)?
-
-    private let sideSize: CGFloat = 26
-    private let sideInset: CGFloat = 8
     private var animationTimer: Timer?
     private var animationPhase: CGFloat = 0
 
@@ -104,7 +96,7 @@ private final class RecordingOverlayView: NSView {
     func preferredSize(for state: State) -> NSSize {
         switch state {
         case .recording:
-            return NSSize(width: 164, height: 44)
+            return NSSize(width: 124, height: 36)
         case .processing:
             return NSSize(width: 124, height: 36)
         }
@@ -128,74 +120,38 @@ private final class RecordingOverlayView: NSView {
 
         switch state {
         case .recording:
-            drawCancelButton()
-            drawWaveform()
-            drawStopButton()
+            drawListening()
         case .processing:
             drawProcessing()
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
-        guard state == .recording else { return }
-        let location = convert(event.locationInWindow, from: nil)
-        if cancelRect.contains(location) {
-            onCancel?()
-        } else if stopRect.contains(location) {
-            onStop?()
-        }
-    }
-
-    private var cancelRect: NSRect {
-        NSRect(x: sideInset, y: (bounds.height - sideSize) / 2, width: sideSize, height: sideSize)
-    }
-
-    private var stopRect: NSRect {
-        NSRect(x: bounds.width - sideInset - sideSize, y: (bounds.height - sideSize) / 2, width: sideSize, height: sideSize)
-    }
-
-    private func drawCancelButton() {
-        NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
-        NSBezierPath(ovalIn: cancelRect).fill()
-        NSColor.white.setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 1.7
-        path.lineCapStyle = .round
-        path.move(to: NSPoint(x: cancelRect.minX + 8, y: cancelRect.minY + 8))
-        path.line(to: NSPoint(x: cancelRect.maxX - 8, y: cancelRect.maxY - 8))
-        path.move(to: NSPoint(x: cancelRect.maxX - 8, y: cancelRect.minY + 8))
-        path.line(to: NSPoint(x: cancelRect.minX + 8, y: cancelRect.maxY - 8))
-        path.stroke()
-    }
-
-    private func drawStopButton() {
-        NSColor.white.setFill()
-        NSBezierPath(ovalIn: stopRect).fill()
-        NSColor(calibratedWhite: 0.08, alpha: 1).setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 1.9
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.move(to: NSPoint(x: stopRect.minX + 7, y: stopRect.midY))
-        path.line(to: NSPoint(x: stopRect.midX - 1, y: stopRect.minY + 8))
-        path.line(to: NSPoint(x: stopRect.maxX - 7, y: stopRect.maxY - 8))
-        path.stroke()
-    }
-
-    private func drawWaveform() {
-        let envelopes: [CGFloat] = [0.32, 0.5, 0.72, 0.94, 0.68, 0.86, 0.56, 0.38]
-        let lineSpacing: CGFloat = 5.4
+    private func drawListening() {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.82),
+        ]
+        let title = "正在聆听" as NSString
+        let titleSize = title.size(withAttributes: attributes)
+        let envelopes: [CGFloat] = [0.42, 0.72, 1, 0.68, 0.4]
+        let lineSpacing: CGFloat = 4.5
         let totalWidth = CGFloat(envelopes.count - 1) * lineSpacing
-        let startX = bounds.midX - totalWidth / 2
-        NSColor.white.withAlphaComponent(0.95).setStroke()
+        let contentWidth = titleSize.width + 10 + totalWidth
+        let titleX = bounds.midX - contentWidth / 2
+        title.draw(
+            at: NSPoint(x: titleX, y: bounds.midY - titleSize.height / 2),
+            withAttributes: attributes
+        )
+        let startX = titleX + titleSize.width + 10
+        NSColor.systemRed.withAlphaComponent(0.88).setStroke()
 
         for (index, envelope) in envelopes.enumerated() {
             let ripple = (sin(animationPhase * 1.9 + CGFloat(index) * 0.92) + 1) / 2
-            let idleHeight: CGFloat = 5 + ripple * 2
-            let voiceHeight = 8 + (audioLevel * 21 * envelope) + (ripple * 4)
+            let idleHeight: CGFloat = 4 + ripple * 1.6
+            let voiceHeight = 6 + (audioLevel * 17 * envelope) + (ripple * 3)
             let height = max(idleHeight, voiceHeight)
             let path = NSBezierPath()
-            path.lineWidth = 2.2
+            path.lineWidth = 2
             path.lineCapStyle = .round
             let x = startX + CGFloat(index) * lineSpacing
             path.move(to: NSPoint(x: x, y: bounds.midY - height / 2))

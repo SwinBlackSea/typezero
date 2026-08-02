@@ -20,7 +20,7 @@ macOS 客户端
 - 录音：AVFoundation，输出 16 kHz、单声道、32 kbps 的 M4A/AAC 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。
 - 快捷键：主线使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。`experiment/fn-event-tap` 分支仅针对 Fn 使用被动 `CGEventTap` 监听 `flagsChanged` 和 `Secondary Fn` 标志，不拦截系统事件；若创建失败则回退到 global monitor，必须在 macOS 12 真机验证后才可合并。
 - 文字插入：先写入剪贴板，再通过 Accessibility API 模拟粘贴；模拟粘贴失败时保留剪贴板文字，文字插入需要“辅助功能”权限。
-- 悬浮反馈：录音和处理中使用不抢焦点的紧凑 `NSPanel` 悬浮胶囊展示；录音时可点击取消或结束，不得抢走目标输入框焦点。成功和失败状态立即收起胶囊，改由菜单栏呈现结果。
+- 悬浮反馈：录音和处理中使用同规格、不抢焦点的紧凑 `NSPanel` 悬浮胶囊展示；录音时保留声音驱动的细波形，结束统一使用全局快捷键或菜单栏，不得抢走目标输入框焦点。成功和失败状态立即收起胶囊，改由菜单栏呈现结果。
 - 凭据：用户自带 Key 时保存到 macOS Keychain，禁止明文落盘。
 - 分发：Developer ID 签名并经 Apple 公证，以 DMG/ZIP 发布；首版不走 Mac App Store 沙盒。
 
