@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var elapsedSeconds: Int = 0
+    @Published private(set) var permissionRevision = UUID()
     @Published var serverURLText: String {
         didSet { UserDefaults.standard.set(serverURLText, forKey: Self.serverURLKey) }
     }
@@ -149,24 +150,21 @@ final class AppModel: ObservableObject {
         setPhase(.idle)
     }
 
-    func requestAccessibilityPermission() {
-        PermissionManager.requestAccessibility(prompt: true)
-    }
-
     func openMicrophoneSettings() {
         PermissionManager.openMicrophoneSettings()
-    }
-
-    func requestInputMonitoringPermission() {
-        PermissionManager.requestInputMonitoring()
     }
 
     func openInputMonitoringSettings() {
         PermissionManager.openInputMonitoringSettings()
     }
 
+    func openAccessibilitySettings() {
+        PermissionManager.openAccessibilitySettings()
+    }
+
     func refreshShortcutMonitoring() {
         shortcutMonitor.start()
+        permissionRevision = UUID()
     }
 
     private func process(_ recording: Recording) {

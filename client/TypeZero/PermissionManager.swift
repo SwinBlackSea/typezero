@@ -15,15 +15,6 @@ enum PermissionManager {
         }
     }
 
-    static func requestAccessibility(prompt: Bool) {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-    }
-
-    static func requestInputMonitoring() {
-        _ = CGRequestListenEventAccess()
-    }
-
     static func openMicrophoneSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
         NSWorkspace.shared.open(url)
@@ -31,6 +22,11 @@ enum PermissionManager {
 
     static func openInputMonitoringSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    static func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
     }
 }
