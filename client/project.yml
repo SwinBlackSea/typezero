@@ -1,0 +1,30 @@
+name: TypeZero
+options:
+  bundleIdPrefix: com.typezero
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+targets:
+  TypeZero:
+    type: application
+    platform: macOS
+    sources:
+      - path: TypeZero
+        excludes:
+          - Info.plist
+          - TypeZero.entitlements
+    info:
+      path: TypeZero/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.typezero.mac
+        PRODUCT_NAME: TypeZero
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: TypeZero/TypeZero.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: NO

@@ -1,0 +1,8 @@
+.env
+.DS_Store
+bin/
+dist/
+client/TypeZero.xcodeproj/
+client/DerivedData/
+client/**/xcuserdata/
+*.xcuserstate

@@ -1,0 +1,87 @@
+# TypeZero 技术说明
+
+## 总体架构
+
+```text
+macOS 客户端
+  录音 -> POST /v1/dictations -> 插入 final_text
+                    |
+                    v
+轻量后端
+  Qwen3-ASR-Flash -> raw_text -> DeepSeek -> final_text
+```
+
+客户端只调用一个 HTTP 接口。服务端内部串行完成语音识别和文字润色，不使用 WebSocket。
+
+## macOS 客户端
+
+- 技术栈：Swift + SwiftUI，必要处使用 AppKit。
+- 系统要求：macOS 13 及以上；使用 XcodeGen 从 `client/project.yml` 生成 Xcode 工程。
+- 录音：AVFoundation，输出 16 kHz、单声道、32 kbps 的 M4A/AAC 音频；客户端在接近 5 分钟或 10 MiB 时自动停止。
+- 快捷键：监听 macOS 全局键盘事件，优先尝试 Fn，并提供可配置组合键作为兼容方案。
+- 文字插入：Accessibility API；失败时回退到剪贴板或模拟粘贴。
+- 凭据：用户自带 Key 时保存到 macOS Keychain，禁止明文落盘。
+- 分发：Developer ID 签名并经 Apple 公证，以 DMG/ZIP 发布；首版不走 Mac App Store 沙盒。
+
+不选择 Tauri 的原因：当前只开发 macOS，原生 Swift 对全局快捷键、录音、辅助功能和系统权限的集成更直接。需要支持 Windows 时再评估跨平台方案。
+
+## 后端
+
+- 技术栈：Go，无状态 HTTP 单进程服务。
+- 核心接口：`POST /v1/dictations`，接收音频和输出模式，返回 `raw_text`、`final_text` 及错误信息。
+- 语音识别：开发期默认 `qwen3-asr-flash`，适合非实时中文听写；客户端限制单次录音不超过 5 分钟、10 MiB。
+- 文字处理：开发期默认 `deepseek-v4-flash` 并关闭思考模式，负责纠错、去除口头语和重复、补充标点、分段及轻度润色，必须保持原意。
+- 模型抽象：定义 `SpeechProvider` 和 `TextProvider`，以后可替换为 OpenAI Transcribe、Groq Whisper、本地 WhisperKit或其他模型。
+- 开发期使用模型最新别名，正式发布时固定模型快照，避免输出随供应商升级而漂移。
+
+### HTTP 接口契约
+
+`GET /healthz` 用于健康检查。`POST /v1/dictations` 使用 `multipart/form-data`，字段如下：
+
+- `audio`：必填，M4A/MP4(AAC) 或 WAV 文件。
+- `duration_ms`：必填，客户端测得的正整数毫秒数；服务端同时解析音频本身的时长。
+- `output_mode`：可选，`polished`（默认）或 `raw`；`raw` 跳过文字润色。
+
+用户自带 Key 时，客户端分别通过 `X-TypeZero-DashScope-Key` 和 `X-TypeZero-DeepSeek-Key` 请求头传递。服务端只在当前请求中使用，不保存、不回传、不写入日志；请求头未提供时使用服务端环境变量中的 Key。
+
+成功响应：
+
+```json
+{
+  "request_id": "7e6f4c45b0e147b2a7f26f57",
+  "raw_text": "原始识别文字",
+  "final_text": "整理润色后的文字"
+}
+```
+
+润色失败仍返回 HTTP 200，保留 `raw_text`、将 `final_text` 留空，并附带结构化 `warning`，由客户端让用户确认是否插入原文。识别失败返回 502，请求处理超时返回 504；参数、格式、大小、时长和频率限制均返回结构化错误。
+
+## 请求与容错
+
+1. 校验音频格式、大小和时长，不合法时立即返回明确错误。
+2. 调用 ASR 得到 `raw_text`；失败则终止，不进入润色。
+3. 调用 DeepSeek 得到 `final_text`。
+4. 润色失败时仍返回 `raw_text`，客户端让用户选择是否插入。
+5. 插入失败时自动复制结果到剪贴板，避免内容丢失。
+
+## 安全与性能
+
+- 正式服务的供应商 API Key 只放在服务端环境变量或密钥服务中；用户自带 Key 时不记录、不回传、不写日志。
+- 全链路 HTTPS；处理完成后立即删除音频，默认不保存录音或文字历史。
+- 客户端将音频转为单声道并压缩后上传，以降低带宽和延迟。
+- 设置请求大小、时长、超时和按客户端 IP 的频率限制；仅在配置可信代理网段后采信 `X-Forwarded-For`。供应商异常时快速失败。
+- 日志仅记录请求 ID、耗时、供应商和错误码，不记录音频、完整文字或 API Key。
+
+## 模型结论
+
+- 默认组合：Qwen3-ASR-Flash + DeepSeek。
+- Qwen 适合国内调用，中文与方言覆盖较好，成本低，且符合录完后一次处理的模式。
+- ChatGPT/Codex 订阅不包含 API 调用额度，也不是产品运行依赖；模型 API 需要单独申请和计费。
+- 后续用真实录音建立小型测试集，对比 Qwen、OpenAI、Groq Whisper 和本地模型的准确率、延迟与成本。
+
+## 演进路线
+
+1. 完成 macOS MVP，验证快捷键、识别、润色和文字插入。
+2. 增加术语词典、润色风格与本地 WhisperKit 隐私模式。
+3. 复用通用后端开发 Android 输入法。
+4. 根据平台限制评估 Windows 和妥协形态的 iOS 独立应用。
