@@ -107,7 +107,7 @@ func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, 
 	}
 	text := strings.TrimSpace(decoded.Choices[0].Message.Content)
 	if text == "" {
-		return "", errors.New("qwen returned empty transcript")
+		return "", fmt.Errorf("qwen: %w", provider.ErrEmptyTranscript)
 	}
 	return text, nil
 }

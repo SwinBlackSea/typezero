@@ -322,13 +322,22 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	timings.asrRan = true
 
 	if asrErr != nil {
-		// Remove the session so the client can retry the whole sequence.
-		a.sessions.remove(sessionID)
-		status, code := providerFailure(ctx, "transcription_failed")
-		a.writeTimingHeader(w, timings)
-		a.fail(w, status, code, "语音识别失败，请重试")
-		a.log(requestID, sessionID, chunkTotal, started, *timings, code, asrErr)
-		return
+		// Empty transcripts are a soft failure: store an empty string for
+		// this chunk and let the LLM merge step drop the silent region.
+		// Removing the session here would force the client to resend every
+		// chunk just because a tail bit of audio was silence.
+		if errors.Is(asrErr, provider.ErrEmptyTranscript) {
+			rawText = ""
+		} else {
+			// Hard failure (network, auth, upstream error): remove the
+			// session so the client can retry the whole sequence.
+			a.sessions.remove(sessionID)
+			status, code := providerFailure(ctx, "transcription_failed")
+			a.writeTimingHeader(w, timings)
+			a.fail(w, status, code, "语音识别失败，请重试")
+			a.log(requestID, sessionID, chunkTotal, started, *timings, code, asrErr)
+			return
+		}
 	}
 
 	complete := state.store(chunkIndex, rawText, time.Now())
@@ -494,6 +503,18 @@ func (e *clientError) Error() string { return e.code }
 
 func (a *API) readAudio(r *http.Request) (provider.Audio, audioinfo.Info, error) {
 	file, header, err := r.FormFile("audio")
+	if err == nil {
+		// DEBUG: dump first 80 bytes of uploaded audio
+		preview := make([]byte, 80)
+		if _, e := file.Read(preview); e == nil {
+			a.logger.Info("audio preview",
+				"filename", header.Filename,
+				"size", header.Size,
+				"head_hex", fmt.Sprintf("%x", preview),
+			)
+		}
+		_, _ = file.Seek(0, io.SeekStart)
+	}
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) {
 			return provider.Audio{}, audioinfo.Info{}, &clientError{http.StatusBadRequest, "audio_required", "缺少 audio 文件"}

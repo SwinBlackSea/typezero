@@ -1,12 +1,22 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 type Audio struct {
 	Data      []byte
 	MediaType string
 	Filename  string
 }
+
+// ErrEmptyTranscript is returned by a Speech implementation when the audio
+// processed but yielded no text (silence, very short input, etc.). Callers
+// that operate on multiple transcript chunks — e.g. the chunked dictation
+// pipeline — should treat this as a soft signal: store the empty text and
+// continue, so a silent tail in one chunk does not poison the whole session.
+var ErrEmptyTranscript = errors.New("provider returned empty transcript")
 
 type Speech interface {
 	Transcribe(ctx context.Context, audio Audio) (string, error)

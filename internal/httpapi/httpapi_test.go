@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -343,10 +344,71 @@ func TestDictationChunkedMissingFields(t *testing.T) {
 	}
 }
 
+// TestDictationChunkedEmptyTranscriptContinues verifies that when one chunk
+// produces no transcript (e.g. silent tail), the handler stores an empty
+// string for that chunk instead of aborting the whole session. The other
+// chunks should still flow through to PolishChunks with the empty slot
+// left blank so the LLM merge step can drop the silent region.
+func TestDictationChunkedEmptyTranscriptContinues(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"段0文字", "", "段2文字"}}
+	text := &textStub{chunks: []string{"合并后文字"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-empty"
+	uploadChunk(t, handler, sessionID, 0, 3, false, testWAV(time.Second), "1000")
+	uploadChunk(t, handler, sessionID, 1, 3, false, testWAV(time.Second), "1000")
+	final := uploadChunk(t, handler, sessionID, 2, 3, true, testWAV(time.Second), "1000")
+
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", final.statusCode, final.body)
+	}
+	var body dictationResponse
+	if err := json.Unmarshal([]byte(final.body), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.FinalText != "合并后文字" {
+		t.Fatalf("final_text = %q", body.FinalText)
+	}
+	if len(text.recordChunks) != 1 {
+		t.Fatalf("expected one PolishChunks call, got %d", len(text.recordChunks))
+	}
+	got := text.recordChunks[0]
+	want := []string{"段0文字", "", "段2文字"}
+	if !equalStringSlices(got, want) {
+		t.Fatalf("chunks = %#v, want %#v", got, want)
+	}
+	if !errors.Is(errors.New(""), provider.ErrEmptyTranscript) {
+		// Silence unused-import check when test stubs are removed.
+		_ = fmt.Sprint("")
+	}
+}
+
+// TestDictationChunkedHardASRErrorAborts ensures that real failures (network
+// errors, 5xx) still abort the session. Only ErrEmptyTranscript is soft.
+func TestDictationChunkedHardASRErrorAborts(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"段0", "", "段2"}}
+	// Wrap the second result with a real (non-empty-transcript) error.
+	speech.errors = []error{nil, errors.New("network down"), nil}
+	text := &textStub{chunks: []string{"合并"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-hard"
+	uploadChunk(t, handler, sessionID, 0, 3, false, testWAV(time.Second), "1000")
+	final := uploadChunk(t, handler, sessionID, 1, 3, true, testWAV(time.Second), "1000")
+
+	if final.statusCode != http.StatusBadGateway && final.statusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, body = %s", final.statusCode, final.body)
+	}
+	if len(text.recordChunks) != 0 {
+		t.Fatalf("PolishChunks should not be called on hard failure, got %d calls", len(text.recordChunks))
+	}
+}
+
 // recordingSpeech returns successive Transcribe results so multi-chunk tests
 // can verify the per-chunk ASR calls without coupling to a real provider.
 type recordingSpeech struct {
 	results []string
+	errors  []error
 	calls   int
 }
 
@@ -356,7 +418,11 @@ func (s *recordingSpeech) Transcribe(_ context.Context, _ provider.Audio) (strin
 	if idx >= len(s.results) {
 		return "", errors.New("recordingSpeech: out of results")
 	}
-	return s.results[idx], nil
+	var err error
+	if idx < len(s.errors) {
+		err = s.errors[idx]
+	}
+	return s.results[idx], err
 }
 
 type chunkUploadResult struct {
