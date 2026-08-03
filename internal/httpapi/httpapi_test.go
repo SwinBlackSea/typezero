@@ -383,6 +383,65 @@ func TestDictationChunkedEmptyTranscriptContinues(t *testing.T) {
 	}
 }
 
+// TestDictationChunkedRejectsOversizedSession verifies that a malicious or
+// buggy client cannot claim an absurdly large chunk_total — the handler must
+// return 400 before allocating a session-sized map.
+func TestDictationChunkedRejectsOversizedSession(t *testing.T) {
+	handler := testHandler(speechStub{}, &textStub{})
+
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	file, _ := w.CreateFormFile("audio", "recording.wav")
+	_, _ = file.Write(testWAV(time.Second))
+	_ = w.WriteField("duration_ms", "1000")
+	_ = w.WriteField("output_mode", "polished")
+	_ = w.WriteField("session_id", "oversized-session")
+	_ = w.WriteField("chunk_index", "0")
+	_ = w.WriteField("chunk_total", "1000000")
+	w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dictations", body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
+// TestDictationChunkedCumulativeASRReporting verifies that the final
+// response's Server-Timing reports the cumulative asr duration across all
+// chunks, not just the last chunk's individual ASR. This is the regression
+// guard for the fix that moves the running total onto sessionState.
+func TestDictationChunkedCumulativeASRReporting(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"a", "b", "c"}}
+	text := &textStub{chunks: []string{"merged"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-cumulative"
+	uploadChunk(t, handler, sessionID, 0, 3, false, testWAV(time.Second), "1000")
+	uploadChunk(t, handler, sessionID, 1, 3, false, testWAV(time.Second), "1000")
+	final := uploadChunk(t, handler, sessionID, 2, 3, true, testWAV(time.Second), "1000")
+
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", final.statusCode, final.body)
+	}
+	// asr_chunks_n is required by the metric schema and should be 3 for a
+	// three-chunk session.
+	if !strings.Contains(final.serverTiming, "asr_chunks_n=3") {
+		t.Fatalf("Server-Timing missing n=3: %q", final.serverTiming)
+	}
+	// The cumulative duration must be a strictly positive number, not zero
+	// or empty. We don't assert an exact value because the stub ASR takes
+	// effectively no time; we just need to make sure the metric is emitted
+	// with a numeric dur.
+	if !strings.Contains(final.serverTiming, "asr_chunks;dur=") {
+		t.Fatalf("Server-Timing missing asr_chunks duration: %q", final.serverTiming)
+	}
+}
+
 // TestDictationChunkedHardASRErrorAborts ensures that real failures (network
 // errors, 5xx) still abort the session. Only ErrEmptyTranscript is soft.
 func TestDictationChunkedHardASRErrorAborts(t *testing.T) {

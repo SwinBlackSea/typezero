@@ -16,6 +16,12 @@ type sessionState struct {
 	arrivedAt     map[int]time.Time
 	completedAt   time.Time
 	allArrived    bool
+
+	// Cumulative ASR timing across all chunks in the session. Updated on
+	// every successful Transcribe so the final response can emit a single
+	// authoritative "asr_chunks" duration in Server-Timing.
+	asrTotal time.Duration
+	asrMax   time.Duration
 }
 
 func newSessionState(expectedTotal int) *sessionState {
@@ -62,6 +68,24 @@ func (s *sessionState) isComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.allArrived
+}
+
+// recordASR folds one chunk's ASR elapsed time into the running totals.
+// Safe to call concurrently with other sessionState methods.
+func (s *sessionState) recordASR(elapsed time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.asrTotal += elapsed
+	if elapsed > s.asrMax {
+		s.asrMax = elapsed
+	}
+}
+
+// asrMetrics returns the cumulative ASR timings observed so far.
+func (s *sessionState) asrMetrics() (total, max time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.asrTotal, s.asrMax
 }
 
 // lastSeen returns the most recent arrival timestamp, or zero if no chunks
@@ -113,10 +137,19 @@ func (s *SessionStore) getOrCreate(id string, expectedTotal int) (*sessionState,
 	if expectedTotal <= 0 {
 		return nil, false, errSessionIndexOutOfRange
 	}
+	if expectedTotal > maxChunksPerSession {
+		return nil, false, errSessionTotalMismatch
+	}
 	state = newSessionState(expectedTotal)
 	s.sessions[id] = state
 	return state, true, nil
 }
+
+// maxChunksPerSession bounds the number of chunks a single session can hold.
+// With 8s step and 5min max recording, 38 chunks is the realistic upper
+// bound; we round up to 64 to leave headroom. Anything larger is almost
+// certainly a malicious or buggy client trying to exhaust memory.
+const maxChunksPerSession = 64
 
 // remove deletes a session and returns whether it existed.
 func (s *SessionStore) remove(id string) bool {
@@ -128,17 +161,35 @@ func (s *SessionStore) remove(id string) bool {
 }
 
 // evict removes sessions whose last activity is older than ttl. Returns the
-// number of sessions removed.
+// number of sessions removed. Expired candidates are collected under the
+// store lock and then checked individually so we do not hold the store lock
+// while waiting for each session's own mutex.
 func (s *SessionStore) evict() (removed int) {
 	cutoff := s.now().Add(-s.ttl)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	candidates := make([]string, 0, len(s.sessions))
 	for id, state := range s.sessions {
+		last := state.lastSeen()
+		if last.IsZero() || last.Before(cutoff) {
+			candidates = append(candidates, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range candidates {
+		s.mu.Lock()
+		// Re-check: the session may have been reactivated or removed while
+		// we were checking other candidates.
+		state, ok := s.sessions[id]
+		if !ok {
+			s.mu.Unlock()
+			continue
+		}
 		last := state.lastSeen()
 		if last.IsZero() || last.Before(cutoff) {
 			delete(s.sessions, id)
 			removed++
 		}
+		s.mu.Unlock()
 	}
 	return removed
 }

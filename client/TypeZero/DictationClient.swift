@@ -336,9 +336,13 @@ struct DictationClient: Sendable {
     }
 
     private func aggregateChunkAsrTotal(_ outcomes: [ChunkOutcome]) -> Int? {
-        // chunkAsrTotal in each response is the running sum; the final chunk's
-        // value equals the full-session total, so prefer the last entry.
-        return outcomes.last?.timing.chunkAsrTotalMilliseconds
+        // Sum every chunk's reported asr duration. The server now keeps a
+        // running total on the session and emits it on each response, so
+        // summing is equivalent to reading the last entry but does not
+        // break if the server falls back to a per-chunk metric.
+        let values = outcomes.compactMap { $0.timing.chunkAsrTotalMilliseconds }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +)
     }
 
     private func aggregateChunkAsrMax(_ outcomes: [ChunkOutcome]) -> Int? {

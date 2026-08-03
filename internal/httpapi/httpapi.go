@@ -314,10 +314,18 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	rawText, asrErr := speech.Transcribe(ctx, audio)
 	asrElapsed := time.Since(asrStarted)
 
+	// Fold this chunk's ASR into the session's running totals so the final
+	// response can report the full cumulative duration, not just the last
+	// chunk's latency. state.recordASR is safe to call regardless of the
+	// outcome of Transcribe (including ErrEmptyTranscript, since the call
+	// did happen and consumed upstream time).
+	state.recordASR(asrElapsed)
 	timings.chunkAsrCounts = chunkTotal
-	timings.chunkAsrTotal += asrElapsed
-	if asrElapsed > timings.chunkAsrMax {
-		timings.chunkAsrMax = asrElapsed
+	if cumulative, observedMax := state.asrMetrics(); cumulative > 0 {
+		timings.chunkAsrTotal = cumulative
+		if observedMax > timings.chunkAsrMax {
+			timings.chunkAsrMax = observedMax
+		}
 	}
 	timings.asrRan = true
 
@@ -371,8 +379,8 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			a.log(requestID, sessionID, chunkTotal, started, *timings, "session_error", waitErr)
 			return
 		}
-		// Drop this final chunk's text (already stored) into the snapshot.
-		all[chunkIndex] = rawText
+		// snapshot already includes this chunk's text (we stored it before
+		// calling waitForCompletion above).
 		a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, mode, started, timings)
 		return
 	}
