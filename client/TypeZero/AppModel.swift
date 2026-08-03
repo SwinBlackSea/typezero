@@ -197,17 +197,17 @@ final class AppModel: ObservableObject {
                     deepSeekAPIKey: self.deepSeekAPIKey
                 )
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try await client.upload(recording: recording)
+                    try await client.uploadChunked(recording: recording)
                 }.value
                 try Task.checkCancellation()
                 let response = result.response
                 self.lastProcessingTiming = result.timing
 
-                if response.warning != nil || response.finalText.isEmpty {
+                if response.warning != nil || (response.finalText?.isEmpty ?? true) {
                     self.setPhase(.rawTextAvailable(response.rawText))
                     return
                 }
-                self.finishInsertion(response.finalText)
+                self.finishInsertion(response.finalText ?? response.rawText)
             } catch is CancellationError {
                 self.setPhase(.idle)
             } catch {

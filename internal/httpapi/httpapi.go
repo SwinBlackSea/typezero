@@ -30,6 +30,7 @@ type Dependencies struct {
 	RequestTimeout   time.Duration
 	RequestsPerMin   int
 	TrustedProxyCIDR string
+	SessionTTL       time.Duration
 }
 
 type API struct {
@@ -43,6 +44,7 @@ type API struct {
 	requestTimeout time.Duration
 	limiter        *rateLimiter
 	trustedProxy   *net.IPNet
+	sessions       *SessionStore
 }
 
 type apiError struct {
@@ -55,27 +57,48 @@ type warning struct {
 	Message string `json:"message"`
 }
 
+// dictationResponse is the unified response shape used both for the legacy
+// single-shot dictation and for the final chunk of a chunked session. When
+// status is "pending" the response is an interim acknowledgement for a
+// non-final chunk and final_text is empty.
 type dictationResponse struct {
-	RequestID string   `json:"request_id"`
-	RawText   string   `json:"raw_text"`
-	FinalText string   `json:"final_text"`
-	Warning   *warning `json:"warning,omitempty"`
+	RequestID  string   `json:"request_id"`
+	SessionID  string   `json:"session_id,omitempty"`
+	ChunkIndex int      `json:"chunk_index,omitempty"`
+	ChunkCount int      `json:"chunk_count,omitempty"`
+	Status     string   `json:"status,omitempty"`
+	RawText    string   `json:"raw_text"`
+	FinalText  string   `json:"final_text,omitempty"`
+	Warning    *warning `json:"warning,omitempty"`
 }
 
-// requestTimings contains only elapsed times. It deliberately carries no
-// audio, transcript, credential, or other request content.
+// requestTimings captures elapsed durations per pipeline stage. Field order
+// in the Server-Timing header is stable so clients can rely on names.
 type requestTimings struct {
-	intake    time.Duration
-	asr       time.Duration
-	polish    time.Duration
-	asrRan    bool
-	polishRan bool
+	intake         time.Duration
+	asr            time.Duration
+	chunkAsrTotal  time.Duration
+	chunkAsrMax    time.Duration
+	mergeDedupe    time.Duration
+	polish         time.Duration
+	asrRan         bool
+	polishRan      bool
+	chunkAsrCounts int
 }
 
 func (t requestTimings) serverTiming() string {
 	parts := []string{fmt.Sprintf("intake;dur=%.3f", durationMilliseconds(t.intake))}
-	if t.asrRan {
+	if t.chunkAsrCounts > 0 {
+		parts = append(parts,
+			fmt.Sprintf("asr_chunks;dur=%.3f", durationMilliseconds(t.chunkAsrTotal)),
+			fmt.Sprintf("asr_chunks_max;dur=%.3f", durationMilliseconds(t.chunkAsrMax)),
+			fmt.Sprintf("asr_chunks_n=%d", t.chunkAsrCounts),
+		)
+	} else if t.asrRan {
 		parts = append(parts, fmt.Sprintf("asr;dur=%.3f", durationMilliseconds(t.asr)))
+	}
+	if t.mergeDedupe > 0 {
+		parts = append(parts, fmt.Sprintf("merge_dedupe;dur=%.3f", durationMilliseconds(t.mergeDedupe)))
 	}
 	if t.polishRan {
 		parts = append(parts, fmt.Sprintf("polish;dur=%.3f", durationMilliseconds(t.polish)))
@@ -98,10 +121,16 @@ func New(deps Dependencies) http.Handler {
 		maxDuration:    deps.MaxDuration,
 		requestTimeout: deps.RequestTimeout,
 		limiter:        newRateLimiter(deps.RequestsPerMin),
+		sessions:       newSessionStore(deps.SessionTTL),
 	}
 	if deps.TrustedProxyCIDR != "" {
 		_, api.trustedProxy, _ = net.ParseCIDR(deps.TrustedProxyCIDR)
 	}
+
+	// The session janitor runs until the process exits. It uses
+	// context.Background so we don't have to plumb shutdown through the
+	// http.Handler lifecycle.
+	go api.sessions.runJanitor(context.Background(), 0)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
@@ -121,9 +150,9 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 
 	if !a.limiter.allow(a.clientIP(r)) {
 		w.Header().Set("Retry-After", "60")
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "请求过于频繁，请稍后重试")
-		a.log(requestID, started, timings, "rate_limited", nil)
+		a.log(requestID, "", 0, started, timings, "rate_limited", nil)
 		return
 	}
 
@@ -142,9 +171,9 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &maxErr) {
 			status, code, message = http.StatusRequestEntityTooLarge, "audio_too_large", "音频不得超过 10 MB"
 		}
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, status, code, message)
-		a.log(requestID, started, timings, code, err)
+		a.log(requestID, "", 0, started, timings, code, err)
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
@@ -155,9 +184,9 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	}
 	if mode != "polished" && mode != "raw" {
 		timings.intake = time.Since(intakeStarted)
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusBadRequest, "invalid_output_mode", "output_mode 仅支持 polished 或 raw")
-		a.log(requestID, started, timings, "invalid_output_mode", nil)
+		a.log(requestID, "", 0, started, timings, "invalid_output_mode", nil)
 		return
 	}
 
@@ -166,50 +195,70 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		timings.intake = time.Since(intakeStarted)
 		var clientErr *clientError
 		if errors.As(err, &clientErr) {
-			a.writeTimingHeader(w, timings)
+			a.writeTimingHeader(w, &timings)
 			a.fail(w, clientErr.status, clientErr.code, clientErr.message)
-			a.log(requestID, started, timings, clientErr.code, err)
+			a.log(requestID, "", 0, started, timings, clientErr.code, err)
 			return
 		}
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusInternalServerError, "internal_error", "服务暂时不可用")
-		a.log(requestID, started, timings, "internal_error", err)
+		a.log(requestID, "", 0, started, timings, "internal_error", err)
 		return
 	}
 	if info.Duration > a.maxDuration {
 		timings.intake = time.Since(intakeStarted)
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusUnprocessableEntity, "audio_too_long", "音频不得超过 5 分钟")
-		a.log(requestID, started, timings, "audio_too_long", nil)
+		a.log(requestID, "", 0, started, timings, "audio_too_long", nil)
 		return
 	}
 
 	declaredDuration, err := parseDeclaredDuration(r.FormValue("duration_ms"))
 	if err != nil {
 		timings.intake = time.Since(intakeStarted)
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusBadRequest, "invalid_duration", "duration_ms 必须是正整数")
-		a.log(requestID, started, timings, "invalid_duration", err)
+		a.log(requestID, "", 0, started, timings, "invalid_duration", err)
 		return
 	}
 	if declaredDuration > a.maxDuration {
 		timings.intake = time.Since(intakeStarted)
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusUnprocessableEntity, "audio_too_long", "音频不得超过 5 分钟")
-		a.log(requestID, started, timings, "audio_too_long", nil)
+		a.log(requestID, "", 0, started, timings, "audio_too_long", nil)
 		return
 	}
 
 	speech, text, err := a.providersForRequest(r)
 	if err != nil {
 		timings.intake = time.Since(intakeStarted)
-		a.writeTimingHeader(w, timings)
+		a.writeTimingHeader(w, &timings)
 		a.fail(w, http.StatusBadRequest, "invalid_api_key", "模型 API Key 格式无效")
-		a.log(requestID, started, timings, "invalid_api_key", nil)
+		a.log(requestID, "", 0, started, timings, "invalid_api_key", nil)
 		return
 	}
 	timings.intake = time.Since(intakeStarted)
 
+	// Chunked mode is triggered when the client provides session_id and
+	// chunk_index. chunk_total is also required. Anything missing falls back
+	// to the legacy single-shot path so existing clients keep working.
+	sessionID, chunkIndex, chunkTotal, isLast, chunked, err := a.parseChunkFields(r)
+	if err != nil {
+		a.writeTimingHeader(w, &timings)
+		a.fail(w, http.StatusBadRequest, err.Error(), "分段参数无效")
+		a.log(requestID, sessionID, chunkTotal, started, timings, err.Error(), nil)
+		return
+	}
+
+	if chunked {
+		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, audio, speech, text, mode, started, &timings)
+		return
+	}
+
+	a.handleSingle(w, r, ctx, requestID, audio, speech, text, mode, started, &timings)
+}
+
+func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID string, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
 	timings.asrRan = true
 	asrStarted := time.Now()
 	rawText, err := speech.Transcribe(ctx, audio)
@@ -218,13 +267,13 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		status, code := providerFailure(ctx, "transcription_failed")
 		a.writeTimingHeader(w, timings)
 		a.fail(w, status, code, "语音识别失败，请重试")
-		a.log(requestID, started, timings, code, err)
+		a.log(requestID, "", 0, started, *timings, code, err)
 		return
 	}
 	if mode == "raw" {
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: rawText})
-		a.log(requestID, started, timings, "ok_raw", nil)
+		a.log(requestID, "", 0, started, *timings, "ok_raw", nil)
 		return
 	}
 
@@ -243,13 +292,178 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		}
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, response)
-		a.log(requestID, started, timings, "polishing_failed", err)
+		a.log(requestID, "", 0, started, *timings, "polishing_failed", err)
 		return
 	}
 
 	a.writeTimingHeader(w, timings)
 	writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: finalText})
-	a.log(requestID, started, timings, "ok", nil)
+	a.log(requestID, "", 0, started, *timings, "ok", nil)
+}
+
+func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID, sessionID string, chunkIndex, chunkTotal int, isLast bool, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
+	state, _, err := a.sessions.getOrCreate(sessionID, chunkTotal)
+	if err != nil {
+		a.writeTimingHeader(w, timings)
+		a.fail(w, http.StatusBadRequest, err.Error(), "分段参数无效")
+		a.log(requestID, sessionID, chunkTotal, started, *timings, err.Error(), nil)
+		return
+	}
+
+	asrStarted := time.Now()
+	rawText, asrErr := speech.Transcribe(ctx, audio)
+	asrElapsed := time.Since(asrStarted)
+
+	timings.chunkAsrCounts = chunkTotal
+	timings.chunkAsrTotal += asrElapsed
+	if asrElapsed > timings.chunkAsrMax {
+		timings.chunkAsrMax = asrElapsed
+	}
+	timings.asrRan = true
+
+	if asrErr != nil {
+		// Remove the session so the client can retry the whole sequence.
+		a.sessions.remove(sessionID)
+		status, code := providerFailure(ctx, "transcription_failed")
+		a.writeTimingHeader(w, timings)
+		a.fail(w, status, code, "语音识别失败，请重试")
+		a.log(requestID, sessionID, chunkTotal, started, *timings, code, asrErr)
+		return
+	}
+
+	complete := state.store(chunkIndex, rawText, time.Now())
+
+	if !isLast {
+		a.writeTimingHeader(w, timings)
+		writeJSON(w, http.StatusOK, dictationResponse{
+			RequestID:  requestID,
+			SessionID:  sessionID,
+			ChunkIndex: chunkIndex,
+			ChunkCount: chunkTotal,
+			Status:     "pending",
+			RawText:    rawText,
+		})
+		a.log(requestID, sessionID, chunkTotal, started, *timings, "chunk_pending", nil)
+		return
+	}
+
+	if !complete {
+		// Other chunks haven't arrived yet. Wait for them or for ctx to expire.
+		all, waitErr := a.sessions.waitForCompletion(ctx, sessionID, 10*time.Millisecond)
+		if waitErr != nil {
+			a.sessions.remove(sessionID)
+			a.writeTimingHeader(w, timings)
+			if errors.Is(waitErr, context.DeadlineExceeded) {
+				a.fail(w, http.StatusGatewayTimeout, "session_timeout", "等待其他分段超时")
+				a.log(requestID, sessionID, chunkTotal, started, *timings, "session_timeout", waitErr)
+				return
+			}
+			a.fail(w, http.StatusBadRequest, waitErr.Error(), "会话状态异常")
+			a.log(requestID, sessionID, chunkTotal, started, *timings, "session_error", waitErr)
+			return
+		}
+		// Drop this final chunk's text (already stored) into the snapshot.
+		all[chunkIndex] = rawText
+		a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, mode, started, timings)
+		return
+	}
+
+	all := state.snapshot()
+	a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, mode, started, timings)
+}
+
+func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, requestID, sessionID string, chunkTotal int, chunks []string, text provider.Text, mode string, started time.Time, timings *requestTimings) {
+	// Tidy: cleanup session regardless of outcome.
+	defer a.sessions.remove(sessionID)
+
+	joined := strings.Join(chunks, "\n")
+	if mode == "raw" {
+		a.writeTimingHeader(w, timings)
+		writeJSON(w, http.StatusOK, dictationResponse{
+			RequestID:  requestID,
+			SessionID:  sessionID,
+			ChunkCount: chunkTotal,
+			RawText:    joined,
+			FinalText:  joined,
+		})
+		a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked_raw", nil)
+		return
+	}
+
+	timings.polishRan = true
+	polishStarted := time.Now()
+	finalText, err := text.PolishChunks(ctx, chunks)
+	timings.polish = time.Since(polishStarted)
+	// merge_dedupe is charged the entire polish time for chunks: the model
+	// performs both merge and polish in one pass, so splitting them is not
+	// observable from outside. We still keep the metric name to align with
+	// the documented stage list.
+	timings.mergeDedupe = timings.polish
+
+	if err != nil {
+		a.writeTimingHeader(w, timings)
+		writeJSON(w, http.StatusOK, dictationResponse{
+			RequestID:  requestID,
+			SessionID:  sessionID,
+			ChunkCount: chunkTotal,
+			RawText:    joined,
+			Warning: &warning{
+				Code:    "polishing_failed",
+				Message: "润色失败，可使用原始识别文字",
+			},
+		})
+		a.log(requestID, sessionID, chunkTotal, started, *timings, "polishing_failed", err)
+		return
+	}
+
+	a.writeTimingHeader(w, timings)
+	writeJSON(w, http.StatusOK, dictationResponse{
+		RequestID:  requestID,
+		SessionID:  sessionID,
+		ChunkCount: chunkTotal,
+		RawText:    joined,
+		FinalText:  finalText,
+	})
+	a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked", nil)
+}
+
+// parseChunkFields extracts session_id / chunk_index / chunk_total / is_last
+// from the multipart form. Returns chunked=true only when all four fields are
+// present and well-formed.
+func (a *API) parseChunkFields(r *http.Request) (sessionID string, chunkIndex, chunkTotal int, isLast bool, chunked bool, err error) {
+	sessionID = strings.TrimSpace(r.FormValue("session_id"))
+	if sessionID == "" {
+		return "", 0, 0, false, false, nil
+	}
+	if len(sessionID) > 128 {
+		return "", 0, 0, false, true, errors.New("invalid_session_id")
+	}
+	idxRaw := strings.TrimSpace(r.FormValue("chunk_index"))
+	totalRaw := strings.TrimSpace(r.FormValue("chunk_total"))
+	lastRaw := strings.TrimSpace(r.FormValue("is_last"))
+	if idxRaw == "" || totalRaw == "" {
+		return "", 0, 0, false, true, errors.New("missing_chunk_fields")
+	}
+	idx, err := strconv.Atoi(idxRaw)
+	if err != nil || idx < 0 {
+		return "", 0, 0, false, true, errors.New("invalid_chunk_index")
+	}
+	total, err := strconv.Atoi(totalRaw)
+	if err != nil || total <= 0 {
+		return "", 0, 0, false, true, errors.New("invalid_chunk_total")
+	}
+	if idx >= total {
+		return "", 0, 0, false, true, errors.New("invalid_chunk_index")
+	}
+	switch strings.ToLower(lastRaw) {
+	case "1", "true", "yes":
+		isLast = true
+	case "", "0", "false", "no":
+		isLast = false
+	default:
+		return "", 0, 0, false, true, errors.New("invalid_is_last")
+	}
+	return sessionID, idx, total, isLast, true, nil
 }
 
 func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Text, error) {
@@ -355,18 +569,34 @@ func (a *API) fail(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message}})
 }
 
-func (a *API) writeTimingHeader(w http.ResponseWriter, timings requestTimings) {
+func (a *API) writeTimingHeader(w http.ResponseWriter, timings *requestTimings) {
 	w.Header().Set("Server-Timing", timings.serverTiming())
 }
 
-func (a *API) log(requestID string, started time.Time, timings requestTimings, outcome string, err error) {
+func (a *API) log(requestID, sessionID string, chunkCount int, started time.Time, timings requestTimings, outcome string, err error) {
 	attrs := []any{
 		"request_id", requestID,
 		"duration_ms", time.Since(started).Milliseconds(),
 		"intake_ms", timings.intake.Milliseconds(),
-		"asr_ms", timings.asr.Milliseconds(),
-		"polish_ms", timings.polish.Milliseconds(),
 		"outcome", outcome,
+	}
+	if sessionID != "" {
+		attrs = append(attrs, "session_id", sessionID, "chunk_count", chunkCount)
+	}
+	if timings.chunkAsrCounts > 0 {
+		attrs = append(attrs,
+			"asr_ms_total", timings.chunkAsrTotal.Milliseconds(),
+			"asr_ms_max", timings.chunkAsrMax.Milliseconds(),
+			"asr_chunks", timings.chunkAsrCounts,
+		)
+	} else if timings.asrRan {
+		attrs = append(attrs, "asr_ms", timings.asr.Milliseconds())
+	}
+	if timings.mergeDedupe > 0 {
+		attrs = append(attrs, "merge_dedupe_ms", timings.mergeDedupe.Milliseconds())
+	}
+	if timings.polishRan {
+		attrs = append(attrs, "polish_ms", timings.polish.Milliseconds())
 	}
 	if err != nil {
 		attrs = append(attrs, "error", err.Error())

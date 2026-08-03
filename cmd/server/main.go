@@ -43,6 +43,7 @@ func main() {
 		RequestTimeout:   cfg.RequestTimeout,
 		RequestsPerMin:   cfg.RequestsPerMinute,
 		TrustedProxyCIDR: cfg.TrustedProxyCIDR,
+		SessionTTL:       cfg.SessionTTL,
 	})
 
 	server := &http.Server{

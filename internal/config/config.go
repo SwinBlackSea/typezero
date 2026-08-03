@@ -30,6 +30,7 @@ type Config struct {
 	RequestTimeout    time.Duration
 	RequestsPerMinute int
 	TrustedProxyCIDR  string
+	SessionTTL        time.Duration
 }
 
 func FromEnv() (Config, error) {
@@ -47,6 +48,7 @@ func FromEnv() (Config, error) {
 		RequestTimeout:    100 * time.Second,
 		RequestsPerMinute: 10,
 		TrustedProxyCIDR:  strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
+		SessionTTL:        5 * time.Minute,
 	}
 
 	if cfg.QwenAPIKey == "" {
@@ -79,6 +81,9 @@ func FromEnv() (Config, error) {
 		if _, _, err := net.ParseCIDR(cfg.TrustedProxyCIDR); err != nil {
 			return Config{}, errors.New("TRUSTED_PROXY_CIDR must be a valid CIDR")
 		}
+	}
+	if cfg.SessionTTL, err = durationEnv("SESSION_TTL", cfg.SessionTTL); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
