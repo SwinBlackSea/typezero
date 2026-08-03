@@ -65,13 +65,32 @@ struct AudioChunker {
             let endByte = headerSize + bytes(for: endMs)
             guard endByte > startByte, endByte <= wavData.count else { break }
 
-            var slice = Data(capacity: headerSize + (endByte - startByte))
-            slice.append(wavData.subdata(in: 0..<headerSize))
-            slice.append(wavData.subdata(in: startByte..<endByte))
-            rewriteChunkSizes(into: &slice)
+            // Build the chunk as a flat [UInt8] buffer so we never depend on
+            // the lifecycle of Data's internal storage. The header bytes are
+            // copied verbatim from the source recording; the PCM slice is
+            // copied from the same range; then the RIFF/data sub-chunk sizes
+            // are rewritten in little-endian so the server's parser sees a
+            // self-describing WAV. Using explicit little-endian writes keeps
+            // the output stable across architectures.
+            let pcmCount = endByte - startByte
+            var bytes = [UInt8]()
+            bytes.reserveCapacity(headerSize + pcmCount)
+            bytes.append(contentsOf: wavData.subdata(in: 0..<headerSize))
+            bytes.append(contentsOf: wavData.subdata(in: startByte..<endByte))
+
+            let pcmSize = UInt32(pcmCount)
+            let riffSize = UInt32(headerSize + pcmCount - 8)
+            bytes[4] = UInt8(truncatingIfNeeded: riffSize)
+            bytes[5] = UInt8(truncatingIfNeeded: riffSize >> 8)
+            bytes[6] = UInt8(truncatingIfNeeded: riffSize >> 16)
+            bytes[7] = UInt8(truncatingIfNeeded: riffSize >> 24)
+            bytes[40] = UInt8(truncatingIfNeeded: pcmSize)
+            bytes[41] = UInt8(truncatingIfNeeded: pcmSize >> 8)
+            bytes[42] = UInt8(truncatingIfNeeded: pcmSize >> 16)
+            bytes[43] = UInt8(truncatingIfNeeded: pcmSize >> 24)
 
             chunks.append(Chunk(
-                data: slice,
+                data: Data(bytes),
                 chunkIndex: index,
                 chunkStartMilliseconds: startMs,
                 chunkEndMilliseconds: endMs
@@ -97,21 +116,5 @@ struct AudioChunker {
         guard wavBytes > 0 else { return nil }
         let seconds = Double(wavBytes) / Double(bytesPerSecond)
         return Int((seconds * 1000).rounded())
-    }
-
-    /// Patch a sliced WAV blob with the correct RIFF/data sizes so the
-    /// server can re-parse it without surprises.
-    private static func rewriteChunkSizes(into data: inout Data) {
-        guard data.count >= headerSize else { return }
-        let pcmSize = UInt32(data.count - headerSize)
-        let riffSize = UInt32(data.count - 8)
-
-        data.withUnsafeMutableBytes { raw -> Void in
-            guard let base = raw.baseAddress else { return }
-            // RIFF size lives at offset 4 (uint32 LE).
-            base.storeBytes(of: riffSize, toByteOffset: 4, as: UInt32.self)
-            // data sub-chunk size lives at offset 40 (uint32 LE).
-            base.storeBytes(of: pcmSize, toByteOffset: 40, as: UInt32.self)
-        }
     }
 }
