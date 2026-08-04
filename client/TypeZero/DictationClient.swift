@@ -190,7 +190,7 @@ struct DictationClient: Sendable {
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = 105
+        request.timeoutInterval = 150
         request.httpBody = body
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -300,9 +300,9 @@ struct DictationClient: Sendable {
         // Per-chunk ASR latency dominates, and a non-final chunk can also
         // sit behind the server's ASR semaphore before its transcription
         // starts. Keep every chunk at or above the server request timeout
-        // (100s) so slow upstream ASR surfaces as a server-side result
+        // (140s) so slow upstream ASR surfaces as a server-side result
         // instead of a client-side timeout.
-        request.timeoutInterval = 105
+        request.timeoutInterval = 150
         request.httpBody = body
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
