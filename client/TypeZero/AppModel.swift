@@ -75,9 +75,16 @@ final class AppModel: ObservableObject {
         recorder.onLimitReached = { @MainActor [weak self] recording in
             guard let self else { return }
             let sessionID = self.incrementalSessionID
+            let uploaded = self.uploadedChunkIndexes
+            let failed = self.incrementalFailed
             self.teardownIncrementalUpload()
             self.setPhase(.processing)
-            self.process(recording, incrementalSessionID: sessionID)
+            self.process(
+                recording,
+                incrementalSessionID: sessionID,
+                alreadyUploaded: uploaded,
+                incrementalFailed: failed
+            )
         }
     }
 
@@ -121,6 +128,8 @@ final class AppModel: ObservableObject {
         guard !isProcessing else { return }
         if isRecording {
             let sessionID = incrementalSessionID
+            let uploaded = uploadedChunkIndexes
+            let failed = incrementalFailed
             teardownIncrementalUpload()
             guard let recording = recorder.stop() else {
                 setPhase(.failure("录音停止失败"))
@@ -128,7 +137,12 @@ final class AppModel: ObservableObject {
             }
             setPhase(.processing)
             feedbackTonePlayer.playStop()
-            process(recording, incrementalSessionID: sessionID)
+            process(
+                recording,
+                incrementalSessionID: sessionID,
+                alreadyUploaded: uploaded,
+                incrementalFailed: failed
+            )
             return
         }
 
@@ -194,7 +208,12 @@ final class AppModel: ObservableObject {
         refreshShortcutMonitoring()
     }
 
-    private func process(_ recording: Recording, incrementalSessionID: String?) {
+    private func process(
+        _ recording: Recording,
+        incrementalSessionID: String?,
+        alreadyUploaded: Set<Int>,
+        incrementalFailed: Bool
+    ) {
         processingTask?.cancel()
         processingTask = Task { [weak self] in
             guard let self else { return }
@@ -207,16 +226,15 @@ final class AppModel: ObservableObject {
                     dashscopeAPIKey: self.dashscopeAPIKey,
                     deepSeekAPIKey: self.deepSeekAPIKey
                 )
-                let sessionID = (incrementalSessionID != nil && !self.incrementalFailed && !self.uploadedChunkIndexes.isEmpty)
+                let sessionID = (incrementalSessionID != nil && !incrementalFailed && !alreadyUploaded.isEmpty)
                     ? incrementalSessionID
                     : nil
-                let uploaded = self.uploadedChunkIndexes
                 let result = try await Task.detached(priority: .userInitiated) {
                     if let sessionID {
                         return try await client.finishChunkedUpload(
                             recording: recording,
                             sessionID: sessionID,
-                            alreadyUploaded: uploaded
+                            alreadyUploaded: alreadyUploaded
                         )
                     }
                     return try await client.uploadChunked(recording: recording)

@@ -362,7 +362,6 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 		return
 	}
 
-	asrStarted := time.Now()
 	if asrErr := a.acquireASR(ctx); asrErr != nil {
 		// Slot wait failed (request deadline or client disconnect). Keep the
 		// session: chunks already transcribed stay usable and the client can
@@ -374,6 +373,10 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 		a.log(requestID, sessionID, chunkTotal, started, *timings, code, asrErr)
 		return
 	}
+	// Start the timer only after the slot is acquired so per-chunk asr_ms
+	// measures the real upstream transcription, not queueing behind other
+	// chunks.
+	asrStarted := time.Now()
 	rawText, asrErr := speech.Transcribe(ctx, audio)
 	a.releaseASR()
 	asrElapsed := time.Since(asrStarted)
