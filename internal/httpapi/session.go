@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
@@ -11,15 +12,18 @@ import (
 // session. Chunks may arrive out of order; readers must not mutate internal
 // maps without holding mu.
 type sessionState struct {
-	mu            sync.Mutex
-	expectedTotal int
-	finalized     bool
-	createdAt     time.Time
-	lastTouch     time.Time
-	received      map[int]string
-	arrivedAt     map[int]time.Time
-	completedAt   time.Time
-	allArrived    bool
+	mu             sync.Mutex
+	expectedTotal  int
+	finalized      bool
+	createdAt      time.Time
+	lastTouch      time.Time
+	asrCompletedAt time.Time
+	received       map[int]string
+	arrivedAt      map[int]time.Time
+	chunkDurations map[int]time.Duration
+	chunkASR       map[int]time.Duration
+	completedAt    time.Time
+	allArrived     bool
 
 	// Cumulative ASR timing across all chunks in the session. Updated on
 	// every successful Transcribe so the final response can emit a single
@@ -30,12 +34,67 @@ type sessionState struct {
 
 func newSessionState(expectedTotal int, now time.Time) *sessionState {
 	return &sessionState{
-		expectedTotal: expectedTotal,
-		createdAt:     now,
-		lastTouch:     now,
-		received:      make(map[int]string, expectedTotal),
-		arrivedAt:     make(map[int]time.Time, expectedTotal),
+		expectedTotal:  expectedTotal,
+		createdAt:      now,
+		lastTouch:      now,
+		received:       make(map[int]string, expectedTotal),
+		arrivedAt:      make(map[int]time.Time, expectedTotal),
+		chunkDurations: make(map[int]time.Duration),
+		chunkASR:       make(map[int]time.Duration),
 	}
+}
+
+// recordChunkMetrics stores the audio duration and ASR elapsed time for one
+// chunk. A retried chunk overwrites its previous ASR time (last attempt
+// wins); the audio duration is fixed by the chunk boundaries.
+func (s *sessionState) recordChunkMetrics(index int, audioDuration, asrElapsed time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chunkDurations[index] = audioDuration
+	s.chunkASR[index] = asrElapsed
+}
+
+// markASRComplete records when every expected chunk finished transcribing.
+func (s *sessionState) markASRComplete(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.After(s.asrCompletedAt) {
+		s.asrCompletedAt = now
+	}
+}
+
+// chunkMetric is one chunk's test observation: audio duration and ASR time.
+type chunkMetric struct {
+	Index   int   `json:"chunk_index"`
+	AudioMs int64 `json:"audio_ms"`
+	ASRMs   int64 `json:"asr_ms"`
+}
+
+// chunkMetrics returns per-chunk observations ordered by chunk index.
+func (s *sessionState) chunkMetrics() []chunkMetric {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]chunkMetric, 0, len(s.chunkASR))
+	for index, asr := range s.chunkASR {
+		out = append(out, chunkMetric{
+			Index:   index,
+			AudioMs: s.chunkDurations[index].Milliseconds(),
+			ASRMs:   asr.Milliseconds(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
+	return out
+}
+
+// asrCompletionSpan returns the time between session creation (first chunk
+// arrived) and the moment every chunk finished ASR, if known.
+func (s *sessionState) asrCompletionSpan() (time.Time, time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.asrCompletedAt.IsZero() {
+		return s.createdAt, 0
+	}
+	return s.createdAt, s.asrCompletedAt.Sub(s.createdAt)
 }
 
 // store records a chunk's transcript. isLast marks the final chunk, which
@@ -420,4 +479,18 @@ func (s *SessionStore) chunkSnapshot(id string) (received, expectedTotal int, co
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return len(state.received), state.expectedTotal, state.allArrived
+}
+
+// chunkMetrics returns per-chunk test observations for a session, plus the
+// time between session creation and full ASR completion. The bool reports
+// whether the session exists.
+func (s *SessionStore) chunkMetrics(id string) ([]chunkMetric, time.Time, time.Duration, bool) {
+	s.mu.Lock()
+	state, ok := s.sessions[id]
+	s.mu.Unlock()
+	if !ok {
+		return nil, time.Time{}, 0, false
+	}
+	createdAt, span := state.asrCompletionSpan()
+	return state.chunkMetrics(), createdAt, span, true
 }

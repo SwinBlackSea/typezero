@@ -632,6 +632,87 @@ func TestDictationChunkedHardASRErrorIsolated(t *testing.T) {
 	}
 }
 
+// captureHandler keeps the last structured log records so tests can assert
+// observability output without coupling to a formatting backend.
+type captureHandler struct {
+	mu      sync.Mutex
+	entries []map[string]any
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	attrs := map[string]any{"msg": record.Message}
+	record.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.entries = append(h.entries, attrs)
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestDictationChunkedLogsTestMetrics verifies the per-session observation
+// log: chunk count, each chunk's audio duration and ASR time, the ASR span,
+// and the merge time.
+func TestDictationChunkedLogsTestMetrics(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"段0", "段1", "段2"}}
+	text := &textStub{chunks: []string{"合并"}}
+	capture := &captureHandler{}
+	handler := New(Dependencies{
+		Speech:         speech,
+		Text:           text,
+		Logger:         slog.New(capture),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+		ASRConcurrency: 1,
+	})
+
+	const sessionID = "sess-metrics"
+	uploadChunk(t, handler, sessionID, 0, 3, false, testWAV(time.Second), "1000")
+	uploadChunk(t, handler, sessionID, 1, 3, false, testWAV(2*time.Second), "2000")
+	final := uploadChunk(t, handler, sessionID, 2, 3, true, testWAV(3*time.Second), "3000")
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, body = %s", final.statusCode, final.body)
+	}
+
+	var metrics map[string]any
+	for _, entry := range capture.entries {
+		if entry["msg"] == "dictation.test_metrics" {
+			metrics = entry
+			break
+		}
+	}
+	if metrics == nil {
+		t.Fatal("missing dictation.test_metrics log record")
+	}
+	if count, ok := metrics["chunk_count"].(int64); !ok || count != 3 {
+		t.Fatalf("chunk_count = %#v, want 3", metrics["chunk_count"])
+	}
+	chunks, ok := metrics["chunks"].([]chunkMetric)
+	if !ok || len(chunks) != 3 {
+		t.Fatalf("chunks = %#v", metrics["chunks"])
+	}
+	if chunks[0].AudioMs != 1000 || chunks[1].AudioMs != 2000 || chunks[2].AudioMs != 3000 {
+		t.Fatalf("chunk audio durations = %#v", chunks)
+	}
+	// The recordingSpeech stub transcribes in microseconds, so per-chunk
+	// ASRMs may round to 0 here; the real durations are asserted on live
+	// server logs. What matters is the field is present per chunk.
+	if span, ok := metrics["asr_span_ms"].(int64); !ok || span < 0 {
+		t.Fatalf("asr_span_ms = %#v", metrics["asr_span_ms"])
+	}
+	if merge, ok := metrics["merge_dedupe_ms"].(int64); !ok || merge < 0 {
+		t.Fatalf("merge_dedupe_ms = %#v", metrics["merge_dedupe_ms"])
+	}
+}
+
 // recordingSpeech returns successive Transcribe results so multi-chunk tests
 // can verify the per-chunk ASR calls without coupling to a real provider.
 type recordingSpeech struct {

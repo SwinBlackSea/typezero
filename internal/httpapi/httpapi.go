@@ -276,7 +276,7 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chunked {
-		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, audio, speech, text, mode, started, &timings)
+		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, declaredDuration, audio, speech, text, mode, started, &timings)
 		return
 	}
 
@@ -353,7 +353,7 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 	a.log(requestID, "", 0, started, *timings, "ok", nil)
 }
 
-func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID, sessionID string, chunkIndex, chunkTotal int, isLast bool, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
+func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID, sessionID string, chunkIndex, chunkTotal int, isLast bool, durationMs time.Duration, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
 	state, _, err := a.sessions.getOrCreate(sessionID, chunkTotal)
 	if err != nil {
 		a.writeTimingHeader(w, timings)
@@ -377,6 +377,7 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	rawText, asrErr := speech.Transcribe(ctx, audio)
 	a.releaseASR()
 	asrElapsed := time.Since(asrStarted)
+	timings.asr = asrElapsed
 
 	// Fold this chunk's ASR into the session's running totals so the final
 	// response can report the full cumulative duration, not just the last
@@ -384,6 +385,7 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	// outcome of Transcribe (including ErrEmptyTranscript, since the call
 	// did happen and consumed upstream time).
 	state.recordASR(asrElapsed)
+	state.recordChunkMetrics(chunkIndex, durationMs, asrElapsed)
 	timings.chunkAsrCounts = chunkTotal
 	if cumulative, observedMax := state.asrMetrics(); cumulative > 0 {
 		timings.chunkAsrTotal = cumulative
@@ -417,6 +419,9 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	timings.asrEmpty = strings.TrimSpace(rawText) == ""
 
 	complete := state.store(chunkIndex, rawText, time.Now(), isLast)
+	if complete {
+		state.markASRComplete(time.Now())
+	}
 
 	if isLast {
 		// Snapshot the session immediately after storing this chunk so we
@@ -445,7 +450,11 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			Status:     "pending",
 			RawText:    rawText,
 		})
-		a.log(requestID, sessionID, chunkTotal, started, *timings, "chunk_pending", nil)
+		a.log(requestID, sessionID, chunkTotal, started, *timings, "chunk_pending", nil,
+			"chunk_index", chunkIndex,
+			"chunk_duration_ms", durationMs.Milliseconds(),
+			"chunk_asr_ms", asrElapsed.Milliseconds(),
+		)
 		return
 	}
 
@@ -478,6 +487,7 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			a.log(requestID, sessionID, chunkTotal, started, *timings, "session_error", waitErr)
 			return
 		}
+		state.markASRComplete(time.Now())
 		// Every chunk is stored now, which means every recordASR has
 		// happened. Refresh the cumulative metrics: when this chunk's own
 		// ASR finished before the others', the snapshot taken at its
@@ -499,7 +509,10 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 
 func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, requestID, sessionID string, chunkTotal int, chunks []string, text provider.Text, mode string, started time.Time, timings *requestTimings) {
 	// Tidy: cleanup session regardless of outcome.
-	defer a.sessions.remove(sessionID)
+	defer func() {
+		a.logSessionMetrics(sessionID, timings)
+		a.sessions.remove(sessionID)
+	}()
 
 	joined := strings.Join(chunks, "\n")
 	if mode == "raw" {
@@ -569,6 +582,25 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 		FinalText:  finalText,
 	})
 	a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked", nil)
+}
+
+// logSessionMetrics emits one structured observation per dictation session:
+// how many chunks, each chunk's audio duration and ASR time, the span from
+// the first chunk arriving to all chunks finishing ASR, and the merge/polish
+// time. It carries no audio content, transcript, or credentials.
+func (a *API) logSessionMetrics(sessionID string, timings *requestTimings) {
+	metrics, createdAt, asrSpan, ok := a.sessions.chunkMetrics(sessionID)
+	if !ok || len(metrics) == 0 {
+		return
+	}
+	a.logger.Info("dictation.test_metrics",
+		"session_id", sessionID,
+		"chunk_count", len(metrics),
+		"chunks", metrics,
+		"asr_span_ms", asrSpan.Milliseconds(),
+		"merge_dedupe_ms", timings.mergeDedupe.Milliseconds(),
+		"session_span_ms", time.Since(createdAt).Milliseconds(),
+	)
 }
 
 // parseChunkFields extracts session_id / chunk_index / chunk_total / is_last
@@ -729,7 +761,7 @@ func (a *API) writeTimingHeader(w http.ResponseWriter, timings *requestTimings) 
 	w.Header().Set("Server-Timing", timings.serverTiming())
 }
 
-func (a *API) log(requestID, sessionID string, chunkCount int, started time.Time, timings requestTimings, outcome string, err error) {
+func (a *API) log(requestID, sessionID string, chunkCount int, started time.Time, timings requestTimings, outcome string, err error, extra ...any) {
 	attrs := []any{
 		"request_id", requestID,
 		"duration_ms", time.Since(started).Milliseconds(),
@@ -758,6 +790,7 @@ func (a *API) log(requestID, sessionID string, chunkCount int, started time.Time
 	if err != nil {
 		attrs = append(attrs, "error", err.Error())
 	}
+	attrs = append(attrs, extra...)
 	a.logger.Info("dictation request completed", attrs...)
 }
 
