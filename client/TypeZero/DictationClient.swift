@@ -110,7 +110,10 @@ struct DictationClient: Sendable {
     /// text and per-chunk timing breakdown.
     func uploadChunked(recording: Recording) async throws -> DictationUploadResult {
         let preparationStarted = Date()
-        let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
+        let audio = try await Self.readRecordingData(
+            url: recording.url,
+            expectedBytes: Self.expectedWAVBytes(durationMs: recording.durationMilliseconds)
+        )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
         }
@@ -209,7 +212,10 @@ struct DictationClient: Sendable {
         alreadyUploaded: Set<Int>
     ) async throws -> DictationUploadResult {
         let preparationStarted = Date()
-        let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
+        let audio = try await Self.readRecordingData(
+            url: recording.url,
+            expectedBytes: Self.expectedWAVBytes(durationMs: recording.durationMilliseconds)
+        )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
         }
@@ -533,6 +539,33 @@ struct DictationClient: Sendable {
 
     private static func megabytes(_ byteCount: Int) -> String {
         String(format: "%.1f", Double(byteCount) / Double(1 << 20))
+    }
+
+    /// AVAudioRecorder.stop() can return while buffered samples are still
+    /// being flushed to disk, so the finished WAV may briefly be shorter
+    /// than the recorded duration. Reading it immediately can silently drop
+    /// the tail (the chunker then sees only one 32s window, or nothing at
+    /// all). Retry until the file reaches the expected size before handing
+    /// it to the chunker; if it never settles, return whatever is on disk so
+    /// the existing empty/parse guards produce the usual diagnostics.
+    private static func readRecordingData(url: URL, expectedBytes: Int) async throws -> Data {
+        var data = try Data(contentsOf: url)
+        var attempt = 0
+        while data.count < expectedBytes && attempt < 15 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            data = try Data(contentsOf: url)
+            attempt += 1
+        }
+        return data
+    }
+
+    /// Floor of the recording duration in bytes for the 16 kHz mono 16-bit
+    /// PCM WAV the recorder produces (44-byte canonical header + 32000 B/s).
+    /// Flooring keeps the expectation at or below the real payload size even
+    /// when the recorder's reported duration rounds up.
+    private static func expectedWAVBytes(durationMs: Int) -> Int {
+        let seconds = durationMs / 1000
+        return AudioChunker.headerSize + seconds * AudioChunker.bytesPerSecond
     }
 }
 
