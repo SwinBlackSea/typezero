@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         containerView.frame = NSRect(x: 0, y: 0, width: 30, height: 22)
         containerView.addSubview(imageView)
         containerView.onMouseUp = { [weak self] in
+            NSLog("TypeZero: status item clicked")
             self?.togglePopover()
         }
 
@@ -101,16 +102,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePopover() {
-        guard let view = statusItem.view else { return }
+        guard let statusItem = statusItem, let view = statusItem.view else {
+            NSLog("TypeZero: togglePopover without status view")
+            return
+        }
         if popover.isShown {
+            NSLog("TypeZero: closing popover")
             popover.performClose(nil)
-        } else {
-            // Menu-bar apps (LSUIElement) on macOS 12 do not reliably show a
-            // transient NSPopover until the app is active; without activating
-            // first, clicking the status item appears to do nothing.
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            return
+        }
+        NSLog("TypeZero: showing popover")
+        // Menu-bar apps (LSUIElement) on macOS 12 need the app active before a
+        // transient NSPopover will display, and showing it in the same event
+        // as the activation can still get swallowed. Defer the show to the
+        // next runloop tick so the click reliably opens the panel.
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let statusItem = self.statusItem,
+                  let view = statusItem.view else { return }
+            self.popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+            self.popover.contentViewController?.view.window?.makeKey()
         }
     }
 
