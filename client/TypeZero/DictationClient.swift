@@ -477,41 +477,6 @@ struct DictationClient: Sendable {
         }
         return ChunkOutcome(response: decoded, timing: timing, errorMessage: nil)
     }
-                errorMessage: "服务响应无效"
-            )
-        }
-        let timing = ServerTiming.parse(httpResponse.value(forHTTPHeaderField: "Server-Timing"))
-        let statusOK = (200..<300).contains(httpResponse.statusCode)
-        if !statusOK {
-            let message: String
-            if let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data) {
-                message = envelope.error.message
-            } else {
-                message = "服务请求失败（\(httpResponse.statusCode)）"
-            }
-            return ChunkOutcome(
-                response: DictationResponse(
-                    requestID: "", sessionID: nil, chunkIndex: nil,
-                    chunkCount: nil, status: nil, rawText: "",
-                    finalText: nil, warning: nil
-                ),
-                timing: timing,
-                errorMessage: "第\(chunk.chunkIndex + 1)段：\(message)"
-            )
-        }
-        guard let decoded = try? JSONDecoder().decode(DictationResponse.self, from: data) else {
-            return ChunkOutcome(
-                response: DictationResponse(
-                    requestID: "", sessionID: nil, chunkIndex: nil,
-                    chunkCount: nil, status: nil, rawText: "",
-                    finalText: nil, warning: nil
-                ),
-                timing: timing,
-                errorMessage: "第\(chunk.chunkIndex + 1)段返回结果无法解析"
-            )
-        }
-        return ChunkOutcome(response: decoded, timing: timing, errorMessage: nil)
-    }
 
     private static func validate(httpResponse: HTTPURLResponse, bodyData: Data) throws {
         guard (200..<300).contains(httpResponse.statusCode) else {
