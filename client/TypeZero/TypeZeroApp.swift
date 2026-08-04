@@ -5,12 +5,6 @@ final class StatusBarItemView: NSView {
     var onClick: (() -> Void)?
 
     override func mouseDown(with event: NSEvent) {
-        // Deliberately ignore mouseDown: showing a transient NSPopover here
-        // lets the same click's mouseUp (which lands outside the popover
-        // window) dismiss it instantly on macOS 12. Act on mouseUp instead.
-    }
-
-    override func mouseUp(with event: NSEvent) {
         onClick?()
     }
 
