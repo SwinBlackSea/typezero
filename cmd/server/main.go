@@ -14,6 +14,7 @@ import (
 	"typezero/internal/httpapi"
 	"typezero/internal/provider"
 	"typezero/internal/provider/deepseek"
+	"typezero/internal/provider/groq"
 	"typezero/internal/provider/qwen"
 )
 
@@ -26,7 +27,13 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: cfg.ProviderTimeout}
-	speech := qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
+	speech := provider.Speech(qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout))
+	if cfg.SpeechProvider == "groq" {
+		// Groq Whisper runs at roughly real-time or faster and is not subject
+		// to DashScope's queueing; it is the preferred ASR when configured.
+		// Clients that pass their own DashScope key still use Qwen.
+		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
+	}
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel)
 	handler := httpapi.New(httpapi.Dependencies{
 		Speech: speech,

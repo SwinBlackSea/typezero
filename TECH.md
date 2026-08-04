@@ -39,7 +39,7 @@ macOS 客户端
 
 - 技术栈：Go，无状态 HTTP 单进程服务。
 - 核心接口：`POST /v1/dictations`，接收音频和输出模式，返回 `raw_text`、`final_text` 及错误信息。
-- 语音识别：开发期默认 `qwen3-asr-flash`，适合非实时中文听写；客户端限制单次录音不超过 5 分钟、10 MiB。
+- 语音识别：`SPEECH_PROVIDER` 可选 `qwen`（DashScope）或 `groq`（Groq Whisper），默认 `qwen`。实测 Groq `whisper-large-v3` 为实时数倍速（10s 音频约 0.4s、30s 约 1.0s、60s 约 1.2s），且不受 DashScope 账号排队影响，为当前首选；Qwen 作为国内可用性的备用。客户端限制单次录音不超过 5 分钟、10 MiB。
 - 文字处理：开发期默认 `deepseek-v4-flash` 并关闭思考模式，负责纠错、去除口头语和重复、补充标点、分段及轻度润色，必须保持原意。原文有明确多事项、步骤或待办信号时使用 `1. 2. 3.` 编号；普通聊天和单一陈述不强行列表化，也不凭空添加标题或事项。
 - 模型抽象：定义 `SpeechProvider` 和 `TextProvider`，以后可替换为 OpenAI Transcribe、Groq Whisper、本地 WhisperKit或其他模型。
 - 开发期使用模型最新别名，正式发布时固定模型快照，避免输出随供应商升级而漂移。
@@ -87,7 +87,8 @@ macOS 客户端
 
 ## 模型结论
 
-- 默认组合：Qwen3-ASR-Flash + DeepSeek。
+- 默认组合：Groq Whisper（whisper-large-v3）+ DeepSeek；Qwen3-ASR-Flash 为备用。
+- 延迟实测对比（同一 30s 音频）：Qwen 公共域名 72s、Qwen 专属域名 30s、Groq 约 1.0s。Groq 免费层无需银行卡（注册需过 Cloudflare 人机验证，建议用住宅 IP），付费层约 $0.111/小时；硅基流动已下架 Whisper，仅剩 SenseVoiceSmall / TeleSpeechASR，作为国内备选。
 - Qwen 适合国内调用，中文与方言覆盖较好，成本低，且符合录完后一次处理的模式。
 - ChatGPT/Codex 订阅不包含 API 调用额度，也不是产品运行依赖；模型 API 需要单独申请和计费。
 - 后续用真实录音建立小型测试集，对比 Qwen、OpenAI、Groq Whisper 和本地模型的准确率、延迟与成本。

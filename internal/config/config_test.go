@@ -37,6 +37,10 @@ func setMinimalEnv(t *testing.T) {
 		"REQUEST_TIMEOUT":     "",
 		"REQUESTS_PER_MINUTE": "",
 		"QWEN_WAIT_TIMEOUT":   "",
+		"SPEECH_PROVIDER":     "",
+		"GROQ_API_KEY":        "",
+		"GROQ_MODEL":          "",
+		"GROQ_API_URL":        "",
 		"TRUSTED_PROXY_CIDR":  "",
 	}
 	for key, value := range values {

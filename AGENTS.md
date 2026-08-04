@@ -153,6 +153,7 @@ plutil -p TypeZero/Info.plist | grep NSMicrophoneUsageDescription
 - Qwen-ASR API 单次音频上限 3 分钟 / 10 MB；录音必须分段，任何“整段上传超过 3 分钟音频”的实现都不合规。
 - DashScope 按主账号 + 模型限流（RPM/TPM、RPS/TPS、Traffic Burst）。实测两段并发时一段排队 90 秒后超时，`ASR_CONCURRENCY` 默认保持 1，未经真机验证不得调大。
 - Qwen 请求必须保留 `X-DashScope-Wait-Timeout` 头（默认 30s），provider 超时必须覆盖基础延迟 + 等待时间；Qwen provider 已内置 429/5xx 退避重试，不要再叠加客户端重试造成惊群。
+- ASR 供应商由 `SPEECH_PROVIDER=qwen|groq` 切换：`groq` 用 Groq Whisper（实测 30s 音频约 1s，无排队），`qwen` 用 DashScope 专属域名（`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`，比公共域名快一倍多）。Groq API Key 只放 `.env`（已被 gitignore），严禁写入代码、日志或提交。
 
 ### 规则 14：分段会话协议
 

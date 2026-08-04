@@ -33,6 +33,10 @@ type Config struct {
 	TrustedProxyCIDR  string
 	SessionTTL        time.Duration
 	QwenWaitTimeout   time.Duration
+	SpeechProvider    string
+	GroqAPIKey        string
+	GroqModel         string
+	GroqURL           string
 }
 
 func FromEnv() (Config, error) {
@@ -59,6 +63,10 @@ func FromEnv() (Config, error) {
 		TrustedProxyCIDR: strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
 		SessionTTL:       5 * time.Minute,
 		QwenWaitTimeout:  30 * time.Second,
+		SpeechProvider:   "qwen",
+		GroqAPIKey:       strings.TrimSpace(os.Getenv("GROQ_API_KEY")),
+		GroqModel:        envOr("GROQ_MODEL", "whisper-large-v3"),
+		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
 	}
 
 	if cfg.QwenAPIKey == "" {
@@ -106,6 +114,16 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.QwenWaitTimeout < 0 || cfg.QwenWaitTimeout > 120*time.Second {
 		return Config{}, errors.New("QWEN_WAIT_TIMEOUT must be between 0s and 120s")
+	}
+	cfg.SpeechProvider = strings.ToLower(strings.TrimSpace(envOr("SPEECH_PROVIDER", cfg.SpeechProvider)))
+	if cfg.SpeechProvider != "qwen" && cfg.SpeechProvider != "groq" {
+		return Config{}, errors.New("SPEECH_PROVIDER must be qwen or groq")
+	}
+	if cfg.SpeechProvider == "groq" && cfg.GroqAPIKey == "" {
+		return Config{}, errors.New("GROQ_API_KEY is required when SPEECH_PROVIDER=groq")
+	}
+	if err := validateProviderURL("GROQ_API_URL", cfg.GroqURL); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
