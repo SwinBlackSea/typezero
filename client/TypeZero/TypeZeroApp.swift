@@ -5,6 +5,13 @@ final class StatusBarItemView: NSView {
     var onClick: (() -> Void)?
 
     override func mouseDown(with event: NSEvent) {
+        // Ignore mouseDown: showing a transient NSPopover here lets the same
+        // click's mouseUp (outside the popover window) dismiss it instantly.
+        // Opening on mouseUp matches how statusItem.button.action behaves and
+        // keeps the panel visible.
+    }
+
+    override func mouseUp(with event: NSEvent) {
         onClick?()
     }
 

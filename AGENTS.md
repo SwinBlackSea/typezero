@@ -75,8 +75,11 @@ settings:
 
 ```swift
 class StatusBarItemView: NSView {
-    var onMouseUp: (() -> Void)?
-    override func mouseDown(with event: NSEvent) { onMouseUp?() }
+    var onClick: (() -> Void)?
+    // 弹 NSPopover 必须在 mouseUp 触发：mouseDown 弹 transient 面板会被
+    // 同一记点击的 mouseUp（落在面板外）立刻关掉，真机表现为点了没反应。
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) { onClick?() }
 }
 statusItem.view = containerView
 ```
