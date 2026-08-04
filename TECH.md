@@ -89,6 +89,8 @@ macOS 客户端
 
 - 默认组合：Groq Whisper（whisper-large-v3）+ DeepSeek；Qwen3-ASR-Flash 为备用。
 - 延迟实测对比（同一 30s 音频）：Qwen 公共域名 72s、Qwen 专属域名 30s、Groq 约 1.0s。Groq 免费层无需银行卡（注册需过 Cloudflare 人机验证，建议用住宅 IP），付费层约 $0.111/小时；硅基流动已下架 Whisper，仅剩 SenseVoiceSmall / TeleSpeechASR，作为国内备选。
+- 对比模式：`ASR_COMPARE=1` 时服务端把每段音频同时发给主/备两个 ASR，逐段记录各自耗时与原始转写，并在会话结束时用同一 DeepSeek 润色备选结果，全部写入 `ASR_COMPARE_FILE`（默认 `/tmp/asr_compare.jsonl`，仅测试期开启，不进 server.log）。注意 `GROQ_LANGUAGE=zh` 会拖累英文识别（实测英文样本被听成中文乱码）。
+- 60s 对比实测（`ASR_COMPARE=1`，同一英文音频拆两段 30s）：Groq 每段 0.7~1.3s、Qwen 每段 63~65s（合计约 128s）；Qwen 两段转写全对，Groq 第一段英文正确、第二段被 `GROQ_LANGUAGE=zh` 带偏成中文乱码（行为不稳定）。结论：速度 Groq 碾压、英文准确率 Qwen 明显更好；中文场景 Groq 依赖热词兜底。产品建议：交互听写保持 Groq，Qwen 作批量精校备选；后续可试 Groq `language` 自动检测解决中英混说。
 - Qwen 适合国内调用，中文与方言覆盖较好，成本低，且符合录完后一次处理的模式。
 - ChatGPT/Codex 订阅不包含 API 调用额度，也不是产品运行依赖；模型 API 需要单独申请和计费。
 - 后续用真实录音建立小型测试集，对比 Qwen、OpenAI、Groq Whisper 和本地模型的准确率、延迟与成本。

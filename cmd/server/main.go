@@ -32,9 +32,21 @@ func main() {
 		// Groq Whisper runs at roughly real-time or faster and is not subject
 		// to DashScope's queueing; it is the preferred ASR when configured.
 		// Clients that pass their own DashScope key still use Qwen.
-		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
+		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqLanguage, cfg.GroqPrompt)
 	}
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel)
+	primaryLabel := cfg.SpeechProvider
+	var compareSpeech provider.Speech
+	compareLabel := ""
+	if cfg.ASRCompare {
+		if cfg.SpeechProvider == "groq" {
+			compareSpeech = qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
+			compareLabel = "qwen"
+		} else if cfg.GroqAPIKey != "" {
+			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqLanguage, cfg.GroqPrompt)
+			compareLabel = "groq"
+		}
+	}
 	handler := httpapi.New(httpapi.Dependencies{
 		Speech: speech,
 		Text:   text,
@@ -44,6 +56,10 @@ func main() {
 		TextForKey: func(apiKey string) provider.Text {
 			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel)
 		},
+		PrimaryLabel:     primaryLabel,
+		CompareSpeech:    compareSpeech,
+		CompareLabel:     compareLabel,
+		CompareFile:      cfg.ASRCompareFile,
 		Logger:           logger,
 		MaxAudioBytes:    cfg.MaxAudioBytes,
 		MaxDuration:      cfg.MaxAudioDuration,

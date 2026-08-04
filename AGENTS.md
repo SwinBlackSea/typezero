@@ -154,6 +154,7 @@ plutil -p TypeZero/Info.plist | grep NSMicrophoneUsageDescription
 - DashScope 按主账号 + 模型限流（RPM/TPM、RPS/TPS、Traffic Burst）。实测两段并发时一段排队 90 秒后超时，`ASR_CONCURRENCY` 默认保持 1，未经真机验证不得调大。
 - Qwen 请求必须保留 `X-DashScope-Wait-Timeout` 头（默认 30s），provider 超时必须覆盖基础延迟 + 等待时间；Qwen provider 已内置 429/5xx 退避重试，不要再叠加客户端重试造成惊群。
 - ASR 供应商由 `SPEECH_PROVIDER=qwen|groq` 切换：`groq` 用 Groq Whisper（实测 30s 音频约 1s，无排队），`qwen` 用 DashScope 专属域名（`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`，比公共域名快一倍多）。Groq API Key 只放 `.env`（已被 gitignore），严禁写入代码、日志或提交。
+- ASR 对比模式：`ASR_COMPARE=1`（配合 `ASR_COMPARE_FILE`，默认 `/tmp/asr_compare.jsonl`）会把每段音频同时发给另一个提供商并逐段记录耗时与转写原文，会话结束时对备选结果跑一次 DeepSeek 润色；该文件含转写原文，属显式测试工具，仅测试期开启，不得进 server.log、不得提交仓库。
 
 ### 规则 14：分段会话协议
 

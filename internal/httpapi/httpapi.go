@@ -24,6 +24,10 @@ type Dependencies struct {
 	Text             provider.Text
 	SpeechForKey     func(string) provider.Speech
 	TextForKey       func(string) provider.Text
+	PrimaryLabel     string
+	CompareSpeech    provider.Speech
+	CompareLabel     string
+	CompareFile      string
 	Logger           *slog.Logger
 	MaxAudioBytes    int64
 	MaxDuration      time.Duration
@@ -39,6 +43,7 @@ type API struct {
 	text           provider.Text
 	speechForKey   func(string) provider.Speech
 	textForKey     func(string) provider.Text
+	compare        *compareRecorder
 	logger         *slog.Logger
 	maxAudioBytes  int64
 	maxDuration    time.Duration
@@ -81,6 +86,7 @@ type requestTimings struct {
 	asr            time.Duration
 	chunkAsrTotal  time.Duration
 	chunkAsrMax    time.Duration
+	asrSpan        time.Duration
 	mergeDedupe    time.Duration
 	polish         time.Duration
 	asrRan         bool
@@ -97,6 +103,9 @@ func (t requestTimings) serverTiming() string {
 			fmt.Sprintf("asr_chunks_max;dur=%.3f", durationMilliseconds(t.chunkAsrMax)),
 			fmt.Sprintf("asr_chunks_n=%d", t.chunkAsrCounts),
 		)
+		if t.asrSpan > 0 {
+			parts = append(parts, fmt.Sprintf("asr_span;dur=%.3f", durationMilliseconds(t.asrSpan)))
+		}
 	} else if t.asrRan {
 		parts = append(parts, fmt.Sprintf("asr;dur=%.3f", durationMilliseconds(t.asr)))
 	}
@@ -122,6 +131,7 @@ func New(deps Dependencies) http.Handler {
 		text:           deps.Text,
 		speechForKey:   deps.SpeechForKey,
 		textForKey:     deps.TextForKey,
+		compare:        nil,
 		logger:         deps.Logger,
 		maxAudioBytes:  deps.MaxAudioBytes,
 		maxDuration:    deps.MaxDuration,
@@ -129,6 +139,9 @@ func New(deps Dependencies) http.Handler {
 		limiter:        newRateLimiter(deps.RequestsPerMin),
 		asrSem:         make(chan struct{}, deps.ASRConcurrency),
 		sessions:       newSessionStore(deps.SessionTTL),
+	}
+	if deps.CompareSpeech != nil && deps.CompareFile != "" {
+		api.compare = newCompareRecorder(deps.CompareFile, deps.RequestTimeout, deps.PrimaryLabel, deps.CompareLabel, deps.CompareSpeech, deps.Text, deps.Logger)
 	}
 	if deps.Logger != nil {
 		api.sessions.setLogger(deps.Logger.With("component", "session_store"))
@@ -308,6 +321,7 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 		}
 		rawText = ""
 	}
+	a.compareChunk("", 0, 0, audio, rawText, timings.asr)
 	if mode == "raw" {
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: rawText})
@@ -421,9 +435,14 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 
 	timings.asrEmpty = strings.TrimSpace(rawText) == ""
 
+	a.compareChunk(sessionID, chunkIndex, durationMs.Milliseconds(), audio, rawText, asrElapsed)
+
 	complete := state.store(chunkIndex, rawText, time.Now(), isLast)
 	if complete {
 		state.markASRComplete(time.Now())
+		if _, span := state.asrCompletionSpan(); span > 0 {
+			timings.asrSpan = span
+		}
 	}
 
 	if isLast {
@@ -491,6 +510,9 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			return
 		}
 		state.markASRComplete(time.Now())
+		if _, span := state.asrCompletionSpan(); span > 0 {
+			timings.asrSpan = span
+		}
 		// Every chunk is stored now, which means every recordASR has
 		// happened. Refresh the cumulative metrics: when this chunk's own
 		// ASR finished before the others', the snapshot taken at its
@@ -527,6 +549,7 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 			RawText:    joined,
 			FinalText:  joined,
 		})
+		a.compareFinalize(sessionID, chunkTotal, joined)
 		a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked_raw", nil)
 		return
 	}
@@ -573,6 +596,7 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 			},
 		})
 		a.log(requestID, sessionID, chunkTotal, started, *timings, "polishing_failed", err)
+		a.compareFinalize(sessionID, chunkTotal, "")
 		return
 	}
 
@@ -584,6 +608,7 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 		RawText:    joined,
 		FinalText:  finalText,
 	})
+	a.compareFinalize(sessionID, chunkTotal, finalText)
 	a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked", nil)
 }
 

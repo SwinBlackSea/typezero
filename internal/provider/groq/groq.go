@@ -24,12 +24,16 @@ type Client struct {
 	url        string
 	apiKey     string
 	model      string
+	language   string
+	prompt     string
 }
 
 // New creates a Groq transcription client. url is the base API URL, e.g.
-// https://api.groq.com/openai/v1.
-func New(httpClient *http.Client, url, apiKey, model string) *Client {
-	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model}
+// https://api.groq.com/openai/v1. language (ISO-639-1, e.g. "zh") and prompt
+// (context / spelling guidance, matching the audio language) improve
+// accuracy for domain terms like model and product names.
+func New(httpClient *http.Client, url, apiKey, model, language, prompt string) *Client {
+	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, language: language, prompt: prompt}
 }
 
 type transcriptionResponse struct {
@@ -93,6 +97,16 @@ func (c *Client) buildBody(audio provider.Audio) ([]byte, string, error) {
 	writer := multipart.NewWriter(&buf)
 	if err := writer.WriteField("model", c.model); err != nil {
 		return nil, "", fmt.Errorf("write groq model field: %w", err)
+	}
+	if c.language != "" {
+		if err := writer.WriteField("language", c.language); err != nil {
+			return nil, "", fmt.Errorf("write groq language field: %w", err)
+		}
+	}
+	if c.prompt != "" {
+		if err := writer.WriteField("prompt", c.prompt); err != nil {
+			return nil, "", fmt.Errorf("write groq prompt field: %w", err)
+		}
 	}
 	part, err := writer.CreateFormFile("file", "recording.wav")
 	if err != nil {
