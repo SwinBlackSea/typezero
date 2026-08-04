@@ -9,7 +9,7 @@ final class AppModel: ObservableObject {
         case processing
         case success(String)
         case failure(String)
-        case rawTextAvailable(String)
+        case rawTextAvailable(text: String, title: String)
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -97,7 +97,7 @@ final class AppModel: ObservableObject {
         case .processing: return "正在识别和整理…"
         case .success(let message): return message
         case .failure(let message): return message
-        case .rawTextAvailable: return "润色失败"
+        case .rawTextAvailable(_, let title): return title
         }
     }
 
@@ -106,7 +106,7 @@ final class AppModel: ObservableObject {
     }
 
     var rawText: String? {
-        guard case .rawTextAvailable(let text) = phase else { return nil }
+        guard case .rawTextAvailable(let text, _) = phase else { return nil }
         return text
     }
 
@@ -204,7 +204,8 @@ final class AppModel: ObservableObject {
                 self.lastProcessingTiming = result.timing
 
                 if response.warning != nil || (response.finalText?.isEmpty ?? true) {
-                    self.setPhase(.rawTextAvailable(response.rawText))
+                    let title = response.warning?.code == "no_speech" ? "未检测到语音" : "润色失败"
+                    self.setPhase(.rawTextAvailable(text: response.rawText, title: title))
                     return
                 }
                 self.finishInsertion(response.finalText ?? response.rawText)

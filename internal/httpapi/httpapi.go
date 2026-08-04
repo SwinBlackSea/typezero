@@ -84,6 +84,7 @@ type requestTimings struct {
 	mergeDedupe    time.Duration
 	polish         time.Duration
 	asrRan         bool
+	asrEmpty       bool
 	polishRan      bool
 	chunkAsrCounts int
 }
@@ -296,16 +297,35 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 	a.releaseASR()
 	timings.asr = time.Since(asrStarted)
 	if err != nil {
-		status, code := providerFailure(ctx, "transcription_failed")
-		a.writeTimingHeader(w, timings)
-		a.fail(w, status, code, "语音识别失败，请重试")
-		a.log(requestID, "", 0, started, *timings, code, err)
-		return
+		// Silent audio is a soft failure: the no_speech warning below
+		// reports it without wasting a polish call.
+		if !errors.Is(err, provider.ErrEmptyTranscript) {
+			status, code := providerFailure(ctx, "transcription_failed")
+			a.writeTimingHeader(w, timings)
+			a.fail(w, status, code, "语音识别失败，请重试")
+			a.log(requestID, "", 0, started, *timings, code, err)
+			return
+		}
+		rawText = ""
 	}
 	if mode == "raw" {
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: rawText})
 		a.log(requestID, "", 0, started, *timings, "ok_raw", nil)
+		return
+	}
+
+	if strings.TrimSpace(rawText) == "" {
+		a.writeTimingHeader(w, timings)
+		writeJSON(w, http.StatusOK, dictationResponse{
+			RequestID: requestID,
+			RawText:   rawText,
+			Warning: &warning{
+				Code:    "no_speech",
+				Message: "未检测到语音，请检查麦克风输入后重试",
+			},
+		})
+		a.log(requestID, "", 0, started, *timings, "no_speech", nil)
 		return
 	}
 
@@ -390,6 +410,8 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			return
 		}
 	}
+
+	timings.asrEmpty = strings.TrimSpace(rawText) == ""
 
 	complete := state.store(chunkIndex, rawText, time.Now())
 
@@ -487,6 +509,25 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 			FinalText:  joined,
 		})
 		a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked_raw", nil)
+		return
+	}
+
+	if strings.TrimSpace(joined) == "" {
+		// Every chunk was silent. Calling the polish model on empty input
+		// wastes a provider round-trip and would surface transient LLM
+		// errors (e.g. 503) instead of the real problem.
+		a.writeTimingHeader(w, timings)
+		writeJSON(w, http.StatusOK, dictationResponse{
+			RequestID:  requestID,
+			SessionID:  sessionID,
+			ChunkCount: chunkTotal,
+			RawText:    joined,
+			Warning: &warning{
+				Code:    "no_speech",
+				Message: "未检测到语音，请检查麦克风输入后重试",
+			},
+		})
+		a.log(requestID, sessionID, chunkTotal, started, *timings, "no_speech", nil)
 		return
 	}
 
@@ -688,6 +729,7 @@ func (a *API) log(requestID, sessionID string, chunkCount int, started time.Time
 			"asr_ms_total", timings.chunkAsrTotal.Milliseconds(),
 			"asr_ms_max", timings.chunkAsrMax.Milliseconds(),
 			"asr_chunks", timings.chunkAsrCounts,
+			"asr_empty", timings.asrEmpty,
 		)
 	} else if timings.asrRan {
 		attrs = append(attrs, "asr_ms", timings.asr.Milliseconds())

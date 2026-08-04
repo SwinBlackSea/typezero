@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"typezero/internal/provider"
 )
@@ -93,6 +94,8 @@ func (c *Client) PolishChunks(ctx context.Context, chunks []string) (string, err
 	return c.complete(ctx, chunkedSystemPrompt, sb.String())
 }
 
+const retryBackoff = 1200 * time.Millisecond
+
 func (c *Client) complete(ctx context.Context, sysPrompt, userContent string) (string, error) {
 	payload := request{
 		Model: c.model,
@@ -109,36 +112,65 @@ func (c *Client) complete(ctx context.Context, sysPrompt, userContent string) (s
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
 		return "", fmt.Errorf("encode deepseek request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, &body)
+	requestBytes := body.Bytes()
+
+	// DeepSeek intermittently answers 503 under load; one bounded retry
+	// turns most of those blips into successes without amplifying traffic.
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(retryBackoff):
+			}
+		}
+		text, err, retryable := c.completeOnce(ctx, requestBytes)
+		if err == nil {
+			return text, nil
+		}
+		lastErr = err
+		if !retryable {
+			return "", err
+		}
+	}
+	return "", lastErr
+}
+
+func (c *Client) completeOnce(ctx context.Context, requestBytes []byte) (string, error, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(requestBytes))
 	if err != nil {
-		return "", fmt.Errorf("create deepseek request: %w", err)
+		return "", fmt.Errorf("create deepseek request: %w", err), false
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("call deepseek: %w", err)
+		return "", fmt.Errorf("call deepseek: %w", err), false
 	}
 	defer resp.Body.Close()
 
 	limited := io.LimitReader(resp.Body, 2<<20)
 	var decoded response
 	if err := json.NewDecoder(limited).Decode(&decoded); err != nil {
-		return "", fmt.Errorf("decode deepseek response: %w", err)
+		return "", fmt.Errorf("decode deepseek response: %w", err), false
+	}
+	if resp.StatusCode >= 500 {
+		return "", &provider.HTTPError{Provider: "deepseek", StatusCode: resp.StatusCode, Code: decoded.Error.Code}, true
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &provider.HTTPError{Provider: "deepseek", StatusCode: resp.StatusCode, Code: decoded.Error.Code}
+		return "", &provider.HTTPError{Provider: "deepseek", StatusCode: resp.StatusCode, Code: decoded.Error.Code}, false
 	}
 	if len(decoded.Choices) == 0 {
-		return "", errors.New("deepseek returned no choices")
+		return "", errors.New("deepseek returned no choices"), false
 	}
 	if reason := decoded.Choices[0].FinishReason; reason != "" && reason != "stop" {
-		return "", fmt.Errorf("deepseek stopped with finish reason %s", reason)
+		return "", fmt.Errorf("deepseek stopped with finish reason %s", reason), false
 	}
 	text := strings.TrimSpace(decoded.Choices[0].Message.Content)
 	if text == "" {
-		return "", errors.New("deepseek returned empty text")
+		return "", errors.New("deepseek returned empty text"), false
 	}
-	return text, nil
+	return text, nil, false
 }

@@ -38,9 +38,11 @@ type textStub struct {
 	// recordChunks saves every input seen by PolishChunks so tests can
 	// assert what the handler handed to the polish stage.
 	recordChunks [][]string
+	polishCount  int
 }
 
 func (s *textStub) Polish(_ context.Context, _ string) (string, error) {
+	s.polishCount++
 	return s.text, s.err
 }
 
@@ -636,4 +638,57 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// Regression: a fully silent recording must not call the polish provider.
+// The client gets a structured no_speech warning instead of a polish error.
+func TestDictationChunkedNoSpeechSkipsPolish(t *testing.T) {
+	speech := speechStub{err: provider.ErrEmptyTranscript}
+	text := &textStub{chunks: []string{"merged"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-no-speech"
+	first := uploadChunk(t, handler, sessionID, 0, 2, false, testWAV(time.Second), "1000")
+	final := uploadChunk(t, handler, sessionID, 1, 2, true, testWAV(time.Second), "1000")
+
+	if first.statusCode != http.StatusOK {
+		t.Fatalf("chunk 0 status = %d, body = %s", first.statusCode, first.body)
+	}
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, body = %s", final.statusCode, final.body)
+	}
+	if len(text.recordChunks) != 0 {
+		t.Fatalf("polish called %d time(s) on silent input", len(text.recordChunks))
+	}
+	var body dictationResponse
+	if err := json.NewDecoder(strings.NewReader(final.body)).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Warning == nil || body.Warning.Code != "no_speech" || body.FinalText != "" {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+// Regression: single-shot path also reports no_speech without calling polish.
+func TestDictationNoSpeechSkipsPolish(t *testing.T) {
+	text := &textStub{text: "polished"}
+	handler := testHandler(speechStub{err: provider.ErrEmptyTranscript}, text)
+	request := multipartRequest(t, testWAV(time.Second), "recording.wav", "1000", "polished")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body dictationResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Warning == nil || body.Warning.Code != "no_speech" || body.FinalText != "" {
+		t.Fatalf("response = %#v", body)
+	}
+	if len(text.recordChunks) != 0 || text.polishCount != 0 {
+		t.Fatalf("polish invoked on silent input")
+	}
 }

@@ -42,6 +42,7 @@ struct ProcessingTiming: Sendable {
     let chunkAsrMaxMilliseconds: Int?
     let mergeDedupeMilliseconds: Int?
     let chunkCount: Int?
+    let emptyChunkCount: Int?
     let isChunked: Bool
 
     var summary: String {
@@ -56,6 +57,9 @@ struct ProcessingTiming: Sendable {
             parts.append("识别\(chunkCount)段 \(totalText)（最长 \(maxText)）")
         } else if let asrMilliseconds {
             parts.append("识别 \(formattedSeconds(asrMilliseconds))")
+        }
+        if let emptyChunkCount, emptyChunkCount > 0 {
+            parts.append("空 \(emptyChunkCount) 段")
         }
         if let mergeDedupeMilliseconds {
             parts.append("去重合并 \(formattedSeconds(mergeDedupeMilliseconds))")
@@ -130,6 +134,16 @@ struct DictationClient: Sendable {
         let requestMilliseconds = elapsedMilliseconds(since: requestStarted)
         let lastOutcome = outcomes.last!
         let response = lastOutcome.response
+        // Diagnostic for silent uploads: non-final outcomes carry their own
+        // chunk's transcript; an empty final raw_text means every chunk was
+        // silent.
+        var emptyChunks = 0
+        for outcome in outcomes.dropLast() where outcome.response.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            emptyChunks += 1
+        }
+        if response.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            emptyChunks = chunks.count
+        }
         let timing = ProcessingTiming(
             preparationMilliseconds: preparationMilliseconds,
             requestMilliseconds: requestMilliseconds,
@@ -140,6 +154,7 @@ struct DictationClient: Sendable {
             chunkAsrMaxMilliseconds: aggregateChunkAsrMax(outcomes),
             mergeDedupeMilliseconds: lastOutcome.timing.mergeDedupeMilliseconds,
             chunkCount: chunks.count,
+            emptyChunkCount: emptyChunks > 0 ? emptyChunks : nil,
             isChunked: chunks.count > 1
         )
         return DictationUploadResult(response: response, timing: timing)
@@ -192,6 +207,7 @@ struct DictationClient: Sendable {
             chunkAsrMaxMilliseconds: nil,
             mergeDedupeMilliseconds: nil,
             chunkCount: nil,
+            emptyChunkCount: nil,
             isChunked: false
         )
         try Self.validate(httpResponse: httpResponse, bodyData: data)
