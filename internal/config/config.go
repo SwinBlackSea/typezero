@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +38,6 @@ type Config struct {
 	GroqAPIKey        string
 	GroqModel         string
 	GroqURL           string
-	GroqLanguage      string
 	GroqPrompt        string
 	HotwordsFile      string
 	ASRCompare        bool
@@ -74,7 +72,6 @@ func FromEnv() (Config, error) {
 		GroqAPIKey:       strings.TrimSpace(os.Getenv("GROQ_API_KEY")),
 		GroqModel:        envOr("GROQ_MODEL", "whisper-large-v3"),
 		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
-		GroqLanguage:     strings.ToLower(strings.TrimSpace(envOr("GROQ_LANGUAGE", "zh"))),
 		GroqPrompt:       strings.TrimSpace(envOr("GROQ_PROMPT", "")),
 		HotwordsFile:     envOr("HOTWORDS_FILE", "hotwords.txt"),
 		ASRCompare:       envBool("ASR_COMPARE"),
@@ -133,9 +130,6 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.SpeechProvider == "groq" && cfg.GroqAPIKey == "" {
 		return Config{}, errors.New("GROQ_API_KEY is required when SPEECH_PROVIDER=groq")
-	}
-	if !regexp.MustCompile(`^[a-z]{2}(-[a-z0-9]{2,8})?$`).MatchString(cfg.GroqLanguage) {
-		return Config{}, errors.New("GROQ_LANGUAGE must be an ISO-639-1 code, e.g. zh or en")
 	}
 	if utf8.RuneCountInString(cfg.GroqPrompt) > 1500 {
 		return Config{}, errors.New("GROQ_PROMPT is too long (keep under ~1500 characters; Groq caps prompt at 224 tokens)")

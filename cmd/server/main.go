@@ -37,7 +37,7 @@ func main() {
 		// Groq Whisper runs at roughly real-time or faster and is not subject
 		// to DashScope's queueing; it is the preferred ASR when configured.
 		// Clients that pass their own DashScope key still use Qwen.
-		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqLanguage, cfg.GroqPrompt, hotwordStore)
+		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt, hotwordStore)
 	}
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, hotwordStore)
 	primaryLabel := cfg.SpeechProvider
@@ -48,7 +48,7 @@ func main() {
 			compareSpeech = qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 			compareLabel = "qwen"
 		} else if cfg.GroqAPIKey != "" {
-			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqLanguage, cfg.GroqPrompt, hotwordStore)
+			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt, hotwordStore)
 			compareLabel = "groq"
 		}
 	}
