@@ -26,13 +26,13 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: cfg.ProviderTimeout}
-	speech := qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel)
+	speech := qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel)
 	handler := httpapi.New(httpapi.Dependencies{
 		Speech: speech,
 		Text:   text,
 		SpeechForKey: func(apiKey string) provider.Speech {
-			return qwen.New(httpClient, cfg.QwenURL, apiKey, cfg.QwenModel)
+			return qwen.New(httpClient, cfg.QwenURL, apiKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 		},
 		TextForKey: func(apiKey string) provider.Text {
 			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel)

@@ -9,20 +9,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"typezero/internal/provider"
 )
 
 type Client struct {
-	httpClient *http.Client
-	url        string
-	apiKey     string
-	model      string
+	httpClient  *http.Client
+	url         string
+	apiKey      string
+	model       string
+	waitTimeout time.Duration
 }
 
-func New(httpClient *http.Client, url, apiKey, model string) *Client {
-	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model}
+// New creates a DashScope compatible-mode client. waitTimeout is declared via
+// X-DashScope-Wait-Timeout so burst requests queue server-side (instead of
+// hanging until the client timeout); 0 disables the header.
+func New(httpClient *http.Client, url, apiKey, model string, waitTimeout time.Duration) *Client {
+	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, waitTimeout: waitTimeout}
 }
 
 type request struct {
@@ -78,36 +84,81 @@ func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, 
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
 		return "", fmt.Errorf("encode qwen request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, &body)
+	requestBytes := body.Bytes()
+
+	// DashScope rate-limits per account+model (RPM/RPS/Traffic Burst). A 429
+	// or 5xx is transient; retry with bounded backoff instead of failing the
+	// whole dictation session. Network/context errors are not retried: when
+	// the server queues longer than the declared wait timeout, the request
+	// already consumed its full budget and retrying would double the latency.
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * time.Second
+			if lastHTTPStatus(lastErr) == http.StatusTooManyRequests {
+				backoff *= 3 // give the quota window time to refill
+			}
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		text, err, retryable := c.transcribeOnce(ctx, requestBytes)
+		if err == nil {
+			return text, nil
+		}
+		lastErr = err
+		if !retryable {
+			return "", err
+		}
+	}
+	return "", lastErr
+}
+
+func lastHTTPStatus(err error) int {
+	var httpErr *provider.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode
+	}
+	return 0
+}
+
+func (c *Client) transcribeOnce(ctx context.Context, requestBytes []byte) (string, error, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(requestBytes))
 	if err != nil {
-		return "", fmt.Errorf("create qwen request: %w", err)
+		return "", fmt.Errorf("create qwen request: %w", err), false
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if c.waitTimeout > 0 {
+		req.Header.Set("X-DashScope-Wait-Timeout", strconv.Itoa(int(c.waitTimeout.Seconds())))
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("call qwen: %w", err)
+		return "", fmt.Errorf("call qwen: %w", err), false
 	}
 	defer resp.Body.Close()
 
 	limited := io.LimitReader(resp.Body, 2<<20)
 	var decoded response
 	if err := json.NewDecoder(limited).Decode(&decoded); err != nil {
-		return "", fmt.Errorf("decode qwen response: %w", err)
+		return "", fmt.Errorf("decode qwen response: %w", err), false
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &provider.HTTPError{Provider: "qwen", StatusCode: resp.StatusCode, Code: decoded.Error.Code}
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		return "", &provider.HTTPError{Provider: "qwen", StatusCode: resp.StatusCode, Code: decoded.Error.Code}, retryable
 	}
 	if len(decoded.Choices) == 0 {
-		return "", errors.New("qwen returned no choices")
+		return "", errors.New("qwen returned no choices"), false
 	}
 	if reason := decoded.Choices[0].FinishReason; reason != "" && reason != "stop" {
-		return "", fmt.Errorf("qwen stopped with finish reason %s", reason)
+		return "", fmt.Errorf("qwen stopped with finish reason %s", reason), false
 	}
 	text := strings.TrimSpace(decoded.Choices[0].Message.Content)
 	if text == "" {
-		return "", fmt.Errorf("qwen: %w", provider.ErrEmptyTranscript)
+		return "", provider.ErrEmptyTranscript, false
 	}
-	return text, nil
+	return text, nil, false
 }

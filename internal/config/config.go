@@ -32,25 +32,33 @@ type Config struct {
 	ASRConcurrency    int
 	TrustedProxyCIDR  string
 	SessionTTL        time.Duration
+	QwenWaitTimeout   time.Duration
 }
 
 func FromEnv() (Config, error) {
 	cfg := Config{
-		ListenAddr:        envOr("LISTEN_ADDR", ":8080"),
-		QwenAPIKey:        strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")),
-		QwenURL:           envOr("QWEN_API_URL", defaultQwenURL),
-		QwenModel:         envOr("QWEN_ASR_MODEL", "qwen3-asr-flash"),
-		DeepSeekAPIKey:    strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")),
-		DeepSeekURL:       envOr("DEEPSEEK_API_URL", defaultDeepSeekURL),
-		DeepSeekModel:     envOr("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-		MaxAudioBytes:     10 << 20,
-		MaxAudioDuration:  5 * time.Minute,
-		ProviderTimeout:   120 * time.Second,
-		RequestTimeout:    140 * time.Second,
+		ListenAddr:       envOr("LISTEN_ADDR", ":8080"),
+		QwenAPIKey:       strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")),
+		QwenURL:          envOr("QWEN_API_URL", defaultQwenURL),
+		QwenModel:        envOr("QWEN_ASR_MODEL", "qwen3-asr-flash"),
+		DeepSeekAPIKey:   strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")),
+		DeepSeekURL:      envOr("DEEPSEEK_API_URL", defaultDeepSeekURL),
+		DeepSeekModel:    envOr("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+		MaxAudioBytes:    10 << 20,
+		MaxAudioDuration: 5 * time.Minute,
+		// DashScope queues burst requests server-side for up to the
+		// X-DashScope-Wait-Timeout we declare; the provider timeout must
+		// cover base latency plus that queueing window (official guidance).
+		ProviderTimeout:   150 * time.Second,
+		RequestTimeout:    170 * time.Second,
 		RequestsPerMinute: 60,
-		ASRConcurrency:    2,
-		TrustedProxyCIDR:  strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
-		SessionTTL:        5 * time.Minute,
+		// Measured on the project account: two concurrent ASR calls queue
+		// behind each other (one waited 90s and timed out). Serial is the
+		// safe default; raise only after verifying the account quota.
+		ASRConcurrency:   1,
+		TrustedProxyCIDR: strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
+		SessionTTL:       5 * time.Minute,
+		QwenWaitTimeout:  30 * time.Second,
 	}
 
 	if cfg.QwenAPIKey == "" {
@@ -92,6 +100,12 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.SessionTTL, err = durationEnv("SESSION_TTL", cfg.SessionTTL); err != nil {
 		return Config{}, err
+	}
+	if cfg.QwenWaitTimeout, err = durationEnv("QWEN_WAIT_TIMEOUT", cfg.QwenWaitTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.QwenWaitTimeout < 0 || cfg.QwenWaitTimeout > 120*time.Second {
+		return Config{}, errors.New("QWEN_WAIT_TIMEOUT must be between 0s and 120s")
 	}
 	return cfg, nil
 }

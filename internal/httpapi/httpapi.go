@@ -364,9 +364,10 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 
 	asrStarted := time.Now()
 	if asrErr := a.acquireASR(ctx); asrErr != nil {
-		// Slot wait failed (request deadline or client disconnect): drop
-		// the session so the client can retry the whole sequence.
-		a.sessions.remove(sessionID)
+		// Slot wait failed (request deadline or client disconnect). Keep the
+		// session: chunks already transcribed stay usable and the client can
+		// simply re-upload this chunk instead of restarting the whole
+		// session. The janitor reaps the session if it is abandoned.
 		status, code := providerFailure(ctx, "transcription_failed")
 		a.writeTimingHeader(w, timings)
 		a.fail(w, status, code, "语音识别失败，请重试")
@@ -400,9 +401,11 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 		if errors.Is(asrErr, provider.ErrEmptyTranscript) {
 			rawText = ""
 		} else {
-			// Hard failure (network, auth, upstream error): remove the
-			// session so the client can retry the whole sequence.
-			a.sessions.remove(sessionID)
+			// Hard failure (network, auth, upstream error). Do not drop the
+			// session: every chunk that already transcribed stays valid and
+			// the client retries just this chunk before sending the final
+			// one. A permanently failing chunk makes the final request time
+			// out, which is the correct fast-ish failure signal.
 			status, code := providerFailure(ctx, "transcription_failed")
 			a.writeTimingHeader(w, timings)
 			a.fail(w, status, code, "语音识别失败，请重试")
@@ -413,7 +416,7 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 
 	timings.asrEmpty = strings.TrimSpace(rawText) == ""
 
-	complete := state.store(chunkIndex, rawText, time.Now())
+	complete := state.store(chunkIndex, rawText, time.Now(), isLast)
 
 	if isLast {
 		// Snapshot the session immediately after storing this chunk so we
@@ -438,7 +441,7 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			RequestID:  requestID,
 			SessionID:  sessionID,
 			ChunkIndex: chunkIndex,
-			ChunkCount: chunkTotal,
+			ChunkCount: state.knownTotal(),
 			Status:     "pending",
 			RawText:    rawText,
 		})
@@ -569,8 +572,11 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 }
 
 // parseChunkFields extracts session_id / chunk_index / chunk_total / is_last
-// from the multipart form. Returns chunked=true only when all four fields are
-// present and well-formed.
+// from the multipart form. Returns chunked=true when session_id and
+// chunk_index are present. chunk_total may be omitted or 0 for non-final
+// chunks: while the client is still recording it does not know how many
+// chunks the final recording will produce. The final chunk must declare a
+// positive chunk_total, which becomes the session's authoritative count.
 func (a *API) parseChunkFields(r *http.Request) (sessionID string, chunkIndex, chunkTotal int, isLast bool, chunked bool, err error) {
 	sessionID = strings.TrimSpace(r.FormValue("session_id"))
 	if sessionID == "" {
@@ -582,18 +588,11 @@ func (a *API) parseChunkFields(r *http.Request) (sessionID string, chunkIndex, c
 	idxRaw := strings.TrimSpace(r.FormValue("chunk_index"))
 	totalRaw := strings.TrimSpace(r.FormValue("chunk_total"))
 	lastRaw := strings.TrimSpace(r.FormValue("is_last"))
-	if idxRaw == "" || totalRaw == "" {
+	if idxRaw == "" {
 		return "", 0, 0, false, true, errors.New("missing_chunk_fields")
 	}
 	idx, err := strconv.Atoi(idxRaw)
 	if err != nil || idx < 0 {
-		return "", 0, 0, false, true, errors.New("invalid_chunk_index")
-	}
-	total, err := strconv.Atoi(totalRaw)
-	if err != nil || total <= 0 {
-		return "", 0, 0, false, true, errors.New("invalid_chunk_total")
-	}
-	if idx >= total {
 		return "", 0, 0, false, true, errors.New("invalid_chunk_index")
 	}
 	switch strings.ToLower(lastRaw) {
@@ -603,6 +602,22 @@ func (a *API) parseChunkFields(r *http.Request) (sessionID string, chunkIndex, c
 		isLast = false
 	default:
 		return "", 0, 0, false, true, errors.New("invalid_is_last")
+	}
+	total := 0
+	if totalRaw != "" {
+		total, err = strconv.Atoi(totalRaw)
+		if err != nil || total < 0 {
+			return "", 0, 0, false, true, errors.New("invalid_chunk_total")
+		}
+	}
+	if total > maxChunksPerSession {
+		return "", 0, 0, false, true, errors.New("invalid_chunk_total")
+	}
+	if isLast && total <= 0 {
+		return "", 0, 0, false, true, errors.New("invalid_chunk_total")
+	}
+	if total > 0 && idx >= total {
+		return "", 0, 0, false, true, errors.New("invalid_chunk_index")
 	}
 	return sessionID, idx, total, isLast, true, nil
 }

@@ -13,6 +13,7 @@ import (
 type sessionState struct {
 	mu            sync.Mutex
 	expectedTotal int
+	finalized     bool
 	createdAt     time.Time
 	lastTouch     time.Time
 	received      map[int]string
@@ -37,12 +38,26 @@ func newSessionState(expectedTotal int, now time.Time) *sessionState {
 	}
 }
 
-// store records a chunk's transcript. Returns true once every expected chunk
-// has arrived.
-func (s *sessionState) store(index int, text string, now time.Time) bool {
+// store records a chunk's transcript. isLast marks the final chunk, which
+// carries the authoritative chunk count: when the session was created with an
+// unknown total (0, incremental uploads during recording), the final chunk's
+// index+1 becomes the expected total. Returns true once the session has been
+// finalized and every expected chunk has arrived.
+func (s *sessionState) store(index int, text string, now time.Time, isLast bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if index < 0 || index >= s.expectedTotal {
+	if index < 0 || index >= maxChunksPerSession {
+		return s.allArrived
+	}
+	if isLast {
+		if !s.finalized {
+			s.finalized = true
+			if index+1 > s.expectedTotal {
+				s.expectedTotal = index + 1
+			}
+		}
+	} else if s.expectedTotal > 0 && index >= s.expectedTotal {
+		// A non-final chunk beyond the declared total is out of range.
 		return s.allArrived
 	}
 	if _, exists := s.received[index]; !exists {
@@ -52,11 +67,31 @@ func (s *sessionState) store(index int, text string, now time.Time) bool {
 	if now.After(s.lastTouch) {
 		s.lastTouch = now
 	}
-	if !s.allArrived && len(s.received) >= s.expectedTotal {
+	if !s.allArrived && s.finalized && s.expectedTotal > 0 && len(s.received) >= s.expectedTotal {
 		s.allArrived = true
 		s.completedAt = now
 	}
 	return s.allArrived
+}
+
+// growExpected raises the authoritative chunk count. Totals only ever grow:
+// non-final chunks may arrive with an unknown total (0) while the recording is
+// still in progress, and the final chunk carries the real count. A stale
+// smaller value from a duplicated request must not shrink the session.
+func (s *sessionState) growExpected(total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if total > s.expectedTotal {
+		s.expectedTotal = total
+	}
+}
+
+// knownTotal returns the authoritative chunk count, or 0 while the session
+// total is still unknown (no final chunk arrived yet).
+func (s *sessionState) knownTotal() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.expectedTotal
 }
 
 // snapshot returns transcripts ordered by chunk index. Caller must not mutate
@@ -188,27 +223,23 @@ func (s *SessionStore) getOrCreate(id string, expectedTotal int) (*sessionState,
 	now := s.now()
 	state, ok := s.sessions[id]
 	if ok {
-		if state.expectedTotal != expectedTotal {
-			s.log().Warn("session.getOrCreate.mismatch",
+		if expectedTotal > state.knownTotal() {
+			state.growExpected(expectedTotal)
+			s.log().Debug("session.getOrCreate.grow",
 				"session_id", id,
-				"existing_total", state.expectedTotal,
-				"requested_total", expectedTotal,
+				"new_total", expectedTotal,
 			)
-			return nil, false, errSessionTotalMismatch
 		}
 		state.touch(now)
 		s.log().Debug("session.getOrCreate.found",
 			"session_id", id,
-			"expected_total", expectedTotal,
+			"expected_total", state.knownTotal(),
 			"map_size", len(s.sessions),
 		)
 		return state, false, nil
 	}
-	if expectedTotal <= 0 {
+	if expectedTotal < 0 || expectedTotal > maxChunksPerSession {
 		return nil, false, errSessionIndexOutOfRange
-	}
-	if expectedTotal > maxChunksPerSession {
-		return nil, false, errSessionTotalMismatch
 	}
 	state = newSessionState(expectedTotal, now)
 	s.sessions[id] = state

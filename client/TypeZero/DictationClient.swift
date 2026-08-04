@@ -166,6 +166,123 @@ struct DictationClient: Sendable {
         return DictationUploadResult(response: response, timing: timing)
     }
 
+    /// Uploads one non-final chunk for an in-progress recording session.
+    /// `chunkTotal` may be 0 while the final count is unknown; the server
+    /// grows the session total and finalizes it when the last chunk arrives.
+    /// Used by the incremental pipeline that transcribes completed chunks
+    /// while recording continues.
+    func uploadChunk(sessionID: String, chunk: AudioChunker.Chunk, chunkTotal: Int) async throws -> DictationUploadResult {
+        let outcome = try await Self.uploadOne(
+            endpoint: endpoint,
+            sessionID: sessionID,
+            chunk: chunk,
+            chunkTotal: chunkTotal,
+            isLast: false,
+            dashscopeAPIKey: dashscopeAPIKey,
+            deepSeekAPIKey: deepSeekAPIKey
+        )
+        if let errorMessage = outcome.errorMessage {
+            throw ClientError.chunkUploadFailed(errorMessage)
+        }
+        return DictationUploadResult(
+            response: outcome.response,
+            timing: Self.processingTiming(
+                for: outcome,
+                chunkCount: chunkTotal > 0 ? chunkTotal : nil,
+                isChunked: true,
+                preparationMilliseconds: 0,
+                requestMilliseconds: 0
+            )
+        )
+    }
+
+    /// Completes an incremental session after recording stops: chunks the
+    /// full recording, uploads any non-final chunks the background flusher
+    /// could not finish (or that failed and were retried), then sends the
+    /// tail as the final chunk. The final response carries the merged and
+    /// polished text.
+    func finishChunkedUpload(
+        recording: Recording,
+        sessionID: String,
+        alreadyUploaded: Set<Int>
+    ) async throws -> DictationUploadResult {
+        let preparationStarted = Date()
+        let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
+        guard !audio.isEmpty else {
+            throw ClientError.invalidRecording("录音文件为空，请重新录音")
+        }
+        guard audio.count <= 12 << 20 else {
+            throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
+        }
+        let chunks = AudioChunker.chunk(
+            wavData: audio,
+            declaredDurationMs: recording.durationMilliseconds
+        )
+        guard !chunks.isEmpty, let lastChunk = chunks.last else {
+            throw ClientError.invalidRecording("录音文件解析失败（\(Self.megabytes(audio.count)) MB），无法切分音频")
+        }
+        let preparationMilliseconds = elapsedMilliseconds(since: preparationStarted)
+        let requestStarted = Date()
+
+        // Upload missing non-final chunks in parallel. Chunks the background
+        // flusher acknowledged keep their server-side transcripts; a chunk
+        // that hard-failed earlier is simply uploaded again here.
+        let missing = chunks.filter {
+            !alreadyUploaded.contains($0.chunkIndex) && $0.chunkIndex != lastChunk.chunkIndex
+        }
+        if !missing.isEmpty {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for chunk in missing {
+                    let endpoint = endpoint
+                    let dashscopeAPIKey = dashscopeAPIKey
+                    let deepSeekAPIKey = deepSeekAPIKey
+                    let sessionID = sessionID
+                    group.addTask {
+                        let outcome = try await Self.uploadOne(
+                            endpoint: endpoint,
+                            sessionID: sessionID,
+                            chunk: chunk,
+                            chunkTotal: 0,
+                            isLast: false,
+                            dashscopeAPIKey: dashscopeAPIKey,
+                            deepSeekAPIKey: deepSeekAPIKey
+                        )
+                        if let errorMessage = outcome.errorMessage {
+                            throw ClientError.chunkUploadFailed(errorMessage)
+                        }
+                    }
+                }
+                try await group.waitForAll()
+            }
+        }
+
+        // The tail chunk declares the authoritative chunk count; its response
+        // blocks until every chunk is stored, then merges and polishes them.
+        let finalOutcome = try await Self.uploadOne(
+            endpoint: endpoint,
+            sessionID: sessionID,
+            chunk: lastChunk,
+            chunkTotal: chunks.count,
+            isLast: true,
+            dashscopeAPIKey: dashscopeAPIKey,
+            deepSeekAPIKey: deepSeekAPIKey
+        )
+        if let errorMessage = finalOutcome.errorMessage {
+            throw ClientError.chunkUploadFailed(errorMessage)
+        }
+        let requestMilliseconds = elapsedMilliseconds(since: requestStarted)
+        return DictationUploadResult(
+            response: finalOutcome.response,
+            timing: Self.processingTiming(
+                for: finalOutcome,
+                chunkCount: chunks.count,
+                isChunked: chunks.count > 1,
+                preparationMilliseconds: preparationMilliseconds,
+                requestMilliseconds: requestMilliseconds
+            )
+        )
+    }
+
     /// Legacy single-shot upload. Kept for any caller that still needs it
     /// (tests, future feature flags).
     func upload(recording: Recording) async throws -> DictationUploadResult {
@@ -384,6 +501,30 @@ struct DictationClient: Sendable {
         let values = outcomes.compactMap { $0.timing.chunkAsrMaxMilliseconds }
         guard !values.isEmpty else { return nil }
         return values.max()
+    }
+
+    private static func processingTiming(
+        for outcome: ChunkOutcome,
+        chunkCount: Int?,
+        isChunked: Bool,
+        preparationMilliseconds: Int,
+        requestMilliseconds: Int
+    ) -> ProcessingTiming {
+        let timing = outcome.timing
+        let singleShot = (chunkCount ?? 1) <= 1
+        return ProcessingTiming(
+            preparationMilliseconds: preparationMilliseconds,
+            requestMilliseconds: requestMilliseconds,
+            intakeMilliseconds: timing.intakeMilliseconds,
+            asrMilliseconds: singleShot ? timing.asrMilliseconds : nil,
+            polishMilliseconds: singleShot ? timing.polishMilliseconds : nil,
+            chunkAsrTotalMilliseconds: timing.chunkAsrTotalMilliseconds,
+            chunkAsrMaxMilliseconds: timing.chunkAsrMaxMilliseconds,
+            mergeDedupeMilliseconds: timing.mergeDedupeMilliseconds,
+            chunkCount: chunkCount,
+            emptyChunkCount: nil,
+            isChunked: isChunked
+        )
     }
 
     private static func megabytes(_ byteCount: Int) -> String {

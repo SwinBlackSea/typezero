@@ -84,6 +84,11 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         return Recording(url: url, durationMilliseconds: max(1, Int(duration * 1000)))
     }
 
+    /// The URL of the in-progress recording file, or nil when not recording.
+    /// The incremental upload pipeline reads this file while recording
+    /// continues so complete chunks can be transcribed before the user stops.
+    var recordingURL: URL? { recorder?.url }
+
     private func tick() {
         guard let recorder else { return }
         let elapsed = recorder.currentTime

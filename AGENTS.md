@@ -148,6 +148,24 @@ plutil -p TypeZero/Info.plist | grep NSMicrophoneUsageDescription
 - 辅助功能只可模拟粘贴；不得读取剪贴板或查询、抓取其他应用的 UI 内容。
 - 录音与识别文字会发送到配置的服务；生产环境必须使用 HTTPS，日志不得记录音频、完整文字或 API Key。
 
+### 规则 13：DashScope ASR 并发与限流（实测约束）
+
+- Qwen-ASR API 单次音频上限 3 分钟 / 10 MB；录音必须分段，任何“整段上传超过 3 分钟音频”的实现都不合规。
+- DashScope 按主账号 + 模型限流（RPM/TPM、RPS/TPS、Traffic Burst）。实测两段并发时一段排队 90 秒后超时，`ASR_CONCURRENCY` 默认保持 1，未经真机验证不得调大。
+- Qwen 请求必须保留 `X-DashScope-Wait-Timeout` 头（默认 30s），provider 超时必须覆盖基础延迟 + 等待时间；Qwen provider 已内置 429/5xx 退避重试，不要再叠加客户端重试造成惊群。
+
+### 规则 14：分段会话协议
+
+- 非末段 `chunk_total` 可传 0（录音中未知），服务端会话总数只增不减，由末段 `is_last=true` 携带权威总数并最终化。
+- 某段 ASR 硬失败只影响该段：服务端不删除会话，客户端停止后重传失败段，全部成功后再发末段。不要用“删会话重来全部”的错误处理。
+- 会话由 `SESSION_TTL`（默认 5 分钟）兜底清理；取消录音后客户端停止上传即可，不要手动清理服务端会话。
+
+### 规则 15：客户端增量上传（Swift 5.7）
+
+- 录音期间每凑满一个 30 秒窗即后台切分并上传非末段（`chunk_total=0`），停止时只剩末段 ASR 与合并；录音中不展示任何中间识别文字。
+- 后台循环用 `Task` + `Task.sleep`（规则 3 的写法），禁止 `Timer` + `@MainActor` 闭包；上传在 `Task.detached` 中执行，主线程只维护已上传段集合。
+- 客户端改动无法在本仓库编译验证（需 macOS 12 + Xcode 14.2），合并前必须在真机走完整录音→分段→合并→插入链路。
+
 ## 后端环境
 
 - **服务器**: 150.109.246.151（Ubuntu）

@@ -252,6 +252,52 @@ func TestDictationChunkedFlowInOrder(t *testing.T) {
 	}
 }
 
+// TestDictationChunkedIncrementalFlow simulates the incremental pipeline:
+// non-final chunks arrive while the client is still recording, so they carry
+// an unknown chunk_total (0). The final chunk declares the authoritative
+// count, finalizes the session, and must merge every transcript in index
+// order.
+func TestDictationChunkedIncrementalFlow(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"段0文字", "段1文字", "段2文字"}}
+	text := &textStub{chunks: []string{"合并后文字"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-incr"
+	pending := uploadChunk(t, handler, sessionID, 0, 0, false, testWAV(time.Second), "1000")
+	if pending.statusCode != http.StatusOK {
+		t.Fatalf("pending status = %d, body = %s", pending.statusCode, pending.body)
+	}
+	var pendingBody dictationResponse
+	if err := json.Unmarshal([]byte(pending.body), &pendingBody); err != nil {
+		t.Fatal(err)
+	}
+	if pendingBody.Status != "pending" || pendingBody.ChunkCount != 0 {
+		t.Fatalf("pending response = %#v", pendingBody)
+	}
+
+	uploadChunk(t, handler, sessionID, 1, 0, false, testWAV(time.Second), "1000")
+
+	final := uploadChunk(t, handler, sessionID, 2, 3, true, testWAV(time.Second), "1000")
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, body = %s", final.statusCode, final.body)
+	}
+	var finalBody dictationResponse
+	if err := json.Unmarshal([]byte(final.body), &finalBody); err != nil {
+		t.Fatal(err)
+	}
+	if finalBody.FinalText != "合并后文字" || finalBody.ChunkCount != 3 {
+		t.Fatalf("final response = %#v", finalBody)
+	}
+	if len(text.recordChunks) != 1 {
+		t.Fatalf("expected one PolishChunks call, got %d", len(text.recordChunks))
+	}
+	got := text.recordChunks[0]
+	want := []string{"段0文字", "段1文字", "段2文字"}
+	if !equalStringSlices(got, want) {
+		t.Fatalf("chunks = %#v, want %#v", got, want)
+	}
+}
+
 // TestDictationChunkedOutOfOrder feeds chunks out of order. The handler must
 // still produce the final text by reordering the stored transcripts.
 func TestDictationChunkedOutOfOrder(t *testing.T) {
@@ -544,24 +590,45 @@ func TestDictationChunkedFinalResponseIncludesLateASR(t *testing.T) {
 	}
 }
 
-// TestDictationChunkedHardASRErrorAborts ensures that real failures (network
-// errors, 5xx) still abort the session. Only ErrEmptyTranscript is soft.
-func TestDictationChunkedHardASRErrorAborts(t *testing.T) {
-	speech := &recordingSpeech{results: []string{"段0", "", "段2"}}
-	// Wrap the second result with a real (non-empty-transcript) error.
-	speech.errors = []error{nil, errors.New("network down"), nil}
+// TestDictationChunkedHardASRErrorIsolated verifies that a hard ASR failure
+// (network error, 5xx) only fails that chunk and does not destroy the
+// session: other chunks already transcribed stay valid, the client can
+// re-upload the failed chunk, and the final chunk then merges everything.
+func TestDictationChunkedHardASRErrorIsolated(t *testing.T) {
+	// Call order: chunk0 ok, chunk1 first attempt hard-fails, chunk1 retry
+	// ok, final chunk2 ok.
+	speech := &recordingSpeech{results: []string{"段0", "", "段1", "段2"}}
+	speech.errors = []error{nil, errors.New("network down"), nil, nil}
 	text := &textStub{chunks: []string{"合并"}}
 	handler := testHandler(speech, text)
 
 	const sessionID = "sess-hard"
-	uploadChunk(t, handler, sessionID, 0, 3, false, testWAV(time.Second), "1000")
-	final := uploadChunk(t, handler, sessionID, 1, 3, true, testWAV(time.Second), "1000")
-
-	if final.statusCode != http.StatusBadGateway && final.statusCode != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, body = %s", final.statusCode, final.body)
+	uploadChunk(t, handler, sessionID, 0, 0, false, testWAV(time.Second), "1000")
+	bad := uploadChunk(t, handler, sessionID, 1, 0, false, testWAV(time.Second), "1000")
+	if bad.statusCode != http.StatusBadGateway {
+		t.Fatalf("bad chunk status = %d, body = %s", bad.statusCode, bad.body)
 	}
 	if len(text.recordChunks) != 0 {
-		t.Fatalf("PolishChunks should not be called on hard failure, got %d calls", len(text.recordChunks))
+		t.Fatalf("PolishChunks must not run before every chunk is stored")
+	}
+
+	// Re-upload the failed chunk, then the final chunk. The session must
+	// still hold chunk 0's transcript and merge all three.
+	retry := uploadChunk(t, handler, sessionID, 1, 3, false, testWAV(time.Second), "1000")
+	if retry.statusCode != http.StatusOK {
+		t.Fatalf("retry status = %d, body = %s", retry.statusCode, retry.body)
+	}
+	final := uploadChunk(t, handler, sessionID, 2, 3, true, testWAV(time.Second), "1000")
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, body = %s", final.statusCode, final.body)
+	}
+	if len(text.recordChunks) != 1 {
+		t.Fatalf("expected one PolishChunks call, got %d", len(text.recordChunks))
+	}
+	got := text.recordChunks[0]
+	want := []string{"段0", "段1", "段2"}
+	if !equalStringSlices(got, want) {
+		t.Fatalf("chunks = %#v, want %#v", got, want)
 	}
 }
 
@@ -587,9 +654,9 @@ func (s *recordingSpeech) Transcribe(_ context.Context, _ provider.Audio) (strin
 }
 
 type chunkUploadResult struct {
-	statusCode    int
-	body          string
-	serverTiming  string
+	statusCode   int
+	body         string
+	serverTiming string
 }
 
 func uploadChunk(t *testing.T, handler http.Handler, sessionID string, index, total int, isLast bool, audio []byte, durationMs string) chunkUploadResult {

@@ -36,6 +36,7 @@ func setMinimalEnv(t *testing.T) {
 		"PROVIDER_TIMEOUT":    "",
 		"REQUEST_TIMEOUT":     "",
 		"REQUESTS_PER_MINUTE": "",
+		"QWEN_WAIT_TIMEOUT":   "",
 		"TRUSTED_PROXY_CIDR":  "",
 	}
 	for key, value := range values {

@@ -41,6 +41,10 @@ final class AppModel: ObservableObject {
     private let shortcutMonitor = ShortcutMonitor()
     private var processingTask: Task<Void, Never>?
     private var hasRequestedSystemPermissions = false
+    private var incrementalSessionID: String?
+    private var uploadedChunkIndexes = Set<Int>()
+    private var incrementalTask: Task<Void, Never>?
+    private var incrementalFailed = false
     var onStatusChanged: ((Phase) -> Void)?
     var onAudioLevelChanged: ((CGFloat) -> Void)?
 
@@ -69,8 +73,11 @@ final class AppModel: ObservableObject {
             self?.onAudioLevelChanged?(level)
         }
         recorder.onLimitReached = { @MainActor [weak self] recording in
-            self?.setPhase(.processing)
-            self?.process(recording)
+            guard let self else { return }
+            let sessionID = self.incrementalSessionID
+            self.teardownIncrementalUpload()
+            self.setPhase(.processing)
+            self.process(recording, incrementalSessionID: sessionID)
         }
     }
 
@@ -113,13 +120,15 @@ final class AppModel: ObservableObject {
     func toggleRecording() async {
         guard !isProcessing else { return }
         if isRecording {
+            let sessionID = incrementalSessionID
+            teardownIncrementalUpload()
             guard let recording = recorder.stop() else {
                 setPhase(.failure("录音停止失败"))
                 return
             }
             setPhase(.processing)
             feedbackTonePlayer.playStop()
-            process(recording)
+            process(recording, incrementalSessionID: sessionID)
             return
         }
 
@@ -128,6 +137,7 @@ final class AppModel: ObservableObject {
             try await recorder.start()
             elapsedSeconds = 0
             lastProcessingTiming = nil
+            beginIncrementalUpload()
             setPhase(.recording)
             feedbackTonePlayer.playStart()
         } catch {
@@ -151,6 +161,7 @@ final class AppModel: ObservableObject {
 
     func cancelRecording() {
         guard isRecording else { return }
+        teardownIncrementalUpload()
         if let recording = recorder.stop() {
             try? FileManager.default.removeItem(at: recording.url)
         }
@@ -183,7 +194,7 @@ final class AppModel: ObservableObject {
         refreshShortcutMonitoring()
     }
 
-    private func process(_ recording: Recording) {
+    private func process(_ recording: Recording, incrementalSessionID: String?) {
         processingTask?.cancel()
         processingTask = Task { [weak self] in
             guard let self else { return }
@@ -196,8 +207,19 @@ final class AppModel: ObservableObject {
                     dashscopeAPIKey: self.dashscopeAPIKey,
                     deepSeekAPIKey: self.deepSeekAPIKey
                 )
+                let sessionID = (incrementalSessionID != nil && !self.incrementalFailed && !self.uploadedChunkIndexes.isEmpty)
+                    ? incrementalSessionID
+                    : nil
+                let uploaded = self.uploadedChunkIndexes
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try await client.uploadChunked(recording: recording)
+                    if let sessionID {
+                        return try await client.finishChunkedUpload(
+                            recording: recording,
+                            sessionID: sessionID,
+                            alreadyUploaded: uploaded
+                        )
+                    }
+                    return try await client.uploadChunked(recording: recording)
                 }.value
                 try Task.checkCancellation()
                 let response = result.response
@@ -214,6 +236,87 @@ final class AppModel: ObservableObject {
             } catch {
                 self.setPhase(.failure(error.localizedDescription))
             }
+        }
+    }
+
+    /// Starts the incremental pipeline: while recording, every completed
+    /// chunk is transcribed on the server in the background so that when the
+    /// user stops, only the tail chunk's ASR and the merge remain.
+    private func beginIncrementalUpload() {
+        incrementalSessionID = UUID().uuidString
+        uploadedChunkIndexes = []
+        incrementalFailed = false
+        incrementalTask?.cancel()
+        incrementalTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.flushCompletedChunks()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    private func teardownIncrementalUpload() {
+        incrementalTask?.cancel()
+        incrementalTask = nil
+        incrementalSessionID = nil
+        uploadedChunkIndexes = []
+        incrementalFailed = false
+    }
+
+    /// Reads the in-progress recording, chunks it, and uploads every chunk
+    /// that is complete (not the still-growing tail) and not yet uploaded.
+    /// The server keeps per-session transcripts, so a chunk is uploaded once.
+    private func flushCompletedChunks() async {
+        guard !incrementalFailed,
+              let sessionID = incrementalSessionID,
+              let url = recorder.recordingURL,
+              let audio = try? Data(contentsOf: url, options: .mappedIfSafe),
+              !audio.isEmpty else { return }
+        let chunks = AudioChunker.chunk(wavData: audio)
+        guard chunks.count > 1 else { return }
+        let toUpload = chunks.dropLast().filter { !uploadedChunkIndexes.contains($0.chunkIndex) }
+        guard !toUpload.isEmpty else { return }
+
+        let endpoint: URL
+        do {
+            endpoint = try validatedEndpoint()
+        } catch {
+            incrementalFailed = true
+            incrementalTask?.cancel()
+            return
+        }
+        let client = DictationClient(
+            endpoint: endpoint,
+            dashscopeAPIKey: dashscopeAPIKey,
+            deepSeekAPIKey: deepSeekAPIKey
+        )
+
+        for chunk in toUpload {
+            // Mark optimistically so the 2s poller does not re-upload a chunk
+            // whose ASR is still in flight; on failure unmark and fall back
+            // to a full upload when the recording stops.
+            uploadedChunkIndexes.insert(chunk.chunkIndex)
+        }
+        await withTaskGroup(of: (Int, Bool).self) { group in
+            for chunk in toUpload {
+                group.addTask { [client, sessionID, chunk] in
+                    do {
+                        try await client.uploadChunk(sessionID: sessionID, chunk: chunk, chunkTotal: 0)
+                        return (chunk.chunkIndex, true)
+                    } catch {
+                        return (chunk.chunkIndex, false)
+                    }
+                }
+            }
+            for await (index, succeeded) in group {
+                if !succeeded {
+                    uploadedChunkIndexes.remove(index)
+                    incrementalFailed = true
+                }
+            }
+        }
+        if incrementalFailed {
+            incrementalTask?.cancel()
         }
     }
 
