@@ -2,14 +2,20 @@ import AppKit
 import SwiftUI
 
 final class StatusBarItemView: NSView {
-    var onMouseUp: (() -> Void)?
+    var onClick: (() -> Void)?
 
     override func mouseDown(with event: NSEvent) {
-        onMouseUp?()
+        // Deliberately ignore mouseDown: showing a transient NSPopover here
+        // lets the same click's mouseUp (which lands outside the popover
+        // window) dismiss it instantly on macOS 12. Act on mouseUp instead.
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onClick?()
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        onMouseUp?()
+        onClick?()
     }
 }
 
@@ -64,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let containerView = StatusBarItemView()
         containerView.frame = NSRect(x: 0, y: 0, width: 30, height: 22)
         containerView.addSubview(imageView)
-        containerView.onMouseUp = { [weak self] in
+        containerView.onClick = { [weak self] in
             NSLog("TypeZero: status item clicked")
             self?.togglePopover()
         }
@@ -74,13 +80,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPopover() {
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 350, height: 340)
         popover.behavior = .transient
         var menuContent = MenuContentView(model: model)
         menuContent.onOpenSettings = { [weak self] in
             self?.openSettings()
         }
         let hosting = NSHostingController(rootView: menuContent)
+        // macOS 12 sizes the popover from the content controller's
+        // preferredContentSize; without an explicit size the SwiftUI hosting
+        // controller can report a zero fitting size and the panel shows up
+        // blank or not at all.
+        hosting.preferredContentSize = NSSize(width: 350, height: 340)
+        popover.contentSize = hosting.preferredContentSize
         popoverContent = hosting
         popover.contentViewController = hosting
     }
