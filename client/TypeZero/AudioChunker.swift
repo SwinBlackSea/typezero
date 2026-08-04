@@ -53,9 +53,11 @@ struct AudioChunker {
         declaredDurationMs: Int? = nil
     ) -> [Chunk] {
         guard let pcmRegion = findPCMRegion(in: wavData) else { return [] }
-        let totalDurationMs = headerDurationMs(wavBytes: pcmRegion.length)
-            ?? declaredDurationMs
-            ?? 0
+        // The (clamped) payload byte count is the source of truth for the
+        // duration; the recorder-declared duration only rescues files whose
+        // data chunk header carries no usable size at all.
+        let payloadDurationMs = headerDurationMs(wavBytes: pcmRegion.length) ?? 0
+        let totalDurationMs = payloadDurationMs > 0 ? payloadDurationMs : (declaredDurationMs ?? 0)
         guard totalDurationMs > 0 else { return [] }
 
         let stepMs = Int((stepSeconds * 1000).rounded())
@@ -144,9 +146,14 @@ struct AudioChunker {
                 }
             case "data":
                 dataOffset = bodyStart
-                dataSize = Int(size)
-                // Keep walking in case a later fmt chunk has more info we
-                // care about, but for our purposes we can stop.
+                // Clamp the declared size to the bytes actually present in
+                // the file. AVAudioRecorder finalizes header sizes on stop,
+                // but a stale or oversized data size would push every slice
+                // past EOF and drop all chunks; a zero size (header never
+                // finalized) falls back to the available payload instead.
+                let availableBytes = wavData.count - bodyStart
+                let declaredBytes = Int(size)
+                dataSize = declaredBytes > 0 ? min(declaredBytes, availableBytes) : availableBytes
                 break
             default:
                 break

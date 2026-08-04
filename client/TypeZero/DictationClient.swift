@@ -84,15 +84,15 @@ private struct ErrorEnvelope: Decodable {
 
 enum ClientError: LocalizedError {
     case configuration(String)
-    case invalidRecording
+    case invalidRecording(String)
     case server(String)
     case invalidResponse
     case chunkUploadFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .configuration(let message), .server(let message): return message
-        case .invalidRecording: return "录音文件无效或超过 10 MB"
+        case .configuration(let message), .server(let message), .invalidRecording(let message):
+            return message
         case .invalidResponse: return "服务返回了无法解析的结果"
         case .chunkUploadFailed(let message): return "分段上传失败：\(message)"
         }
@@ -110,8 +110,14 @@ struct DictationClient: Sendable {
     func uploadChunked(recording: Recording) async throws -> DictationUploadResult {
         let preparationStarted = Date()
         let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
-        guard !audio.isEmpty, audio.count <= 10 << 20 else {
-            throw ClientError.invalidRecording
+        guard !audio.isEmpty else {
+            throw ClientError.invalidRecording("录音文件为空，请重新录音")
+        }
+        // The recorder auto-stops near 5 minutes / 10 MiB. Keep a margin
+        // above that for WAV headers and writer padding so a legitimate
+        // recording never trips this guard; anything larger is anomalous.
+        guard audio.count <= 12 << 20 else {
+            throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
 
         let chunks = AudioChunker.chunk(
@@ -119,7 +125,7 @@ struct DictationClient: Sendable {
             declaredDurationMs: recording.durationMilliseconds
         )
         guard !chunks.isEmpty else {
-            throw ClientError.invalidRecording
+            throw ClientError.invalidRecording("录音文件解析失败（\(Self.megabytes(audio.count)) MB），无法切分音频")
         }
 
         let sessionID = UUID().uuidString
@@ -165,8 +171,14 @@ struct DictationClient: Sendable {
     func upload(recording: Recording) async throws -> DictationUploadResult {
         let preparationStarted = Date()
         let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
-        guard !audio.isEmpty, audio.count <= 10 << 20, recording.durationMilliseconds <= 5 * 60 * 1000 else {
-            throw ClientError.invalidRecording
+        guard !audio.isEmpty else {
+            throw ClientError.invalidRecording("录音文件为空，请重新录音")
+        }
+        guard audio.count <= 10 << 20 else {
+            throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
+        }
+        guard recording.durationMilliseconds <= 5 * 60 * 1000 else {
+            throw ClientError.invalidRecording("录音时长超过 5 分钟上限")
         }
 
         let boundary = "TypeZero-\(UUID().uuidString)"
@@ -372,6 +384,10 @@ struct DictationClient: Sendable {
         let values = outcomes.compactMap { $0.timing.chunkAsrMaxMilliseconds }
         guard !values.isEmpty else { return nil }
         return values.max()
+    }
+
+    private static func megabytes(_ byteCount: Int) -> String {
+        String(format: "%.1f", Double(byteCount) / Double(1 << 20))
     }
 }
 
