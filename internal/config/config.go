@@ -41,6 +41,7 @@ type Config struct {
 	GroqURL           string
 	GroqLanguage      string
 	GroqPrompt        string
+	HotwordsFile      string
 	ASRCompare        bool
 	ASRCompareFile    string
 }
@@ -75,6 +76,7 @@ func FromEnv() (Config, error) {
 		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
 		GroqLanguage:     strings.ToLower(strings.TrimSpace(envOr("GROQ_LANGUAGE", "zh"))),
 		GroqPrompt:       strings.TrimSpace(envOr("GROQ_PROMPT", "")),
+		HotwordsFile:     envOr("HOTWORDS_FILE", "hotwords.txt"),
 		ASRCompare:       envBool("ASR_COMPARE"),
 		ASRCompareFile:   envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),
 	}

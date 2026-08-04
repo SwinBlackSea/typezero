@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"typezero/internal/hotwords"
 	"typezero/internal/provider"
 )
 
@@ -26,14 +27,17 @@ type Client struct {
 	model      string
 	language   string
 	prompt     string
+	hotwords   *hotwords.Store
 }
 
 // New creates a Groq transcription client. url is the base API URL, e.g.
 // https://api.groq.com/openai/v1. language (ISO-639-1, e.g. "zh") and prompt
 // (context / spelling guidance, matching the audio language) improve
-// accuracy for domain terms like model and product names.
-func New(httpClient *http.Client, url, apiKey, model, language, prompt string) *Client {
-	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, language: language, prompt: prompt}
+// accuracy for domain terms like model and product names. hotwords is an
+// optional reloadable term table whose contents are appended to the prompt on
+// every request, so editing hotwords.txt takes effect without restarting.
+func New(httpClient *http.Client, url, apiKey, model, language, prompt string, hotwords *hotwords.Store) *Client {
+	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, language: language, prompt: prompt, hotwords: hotwords}
 }
 
 type transcriptionResponse struct {
@@ -103,8 +107,17 @@ func (c *Client) buildBody(audio provider.Audio) ([]byte, string, error) {
 			return nil, "", fmt.Errorf("write groq language field: %w", err)
 		}
 	}
-	if c.prompt != "" {
-		if err := writer.WriteField("prompt", c.prompt); err != nil {
+	prompt := c.prompt
+	if c.hotwords != nil {
+		if fragment := hotwords.BuildPrompt(c.hotwords.Terms(), 1200); fragment != "" {
+			if prompt != "" {
+				prompt += "\n"
+			}
+			prompt += fragment
+		}
+	}
+	if prompt != "" {
+		if err := writer.WriteField("prompt", prompt); err != nil {
 			return nil, "", fmt.Errorf("write groq prompt field: %w", err)
 		}
 	}

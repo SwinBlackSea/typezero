@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"typezero/internal/hotwords"
 	"typezero/internal/provider"
 )
 
@@ -37,9 +38,10 @@ const termGuidance = `
 - 服务端、客户端、快捷键、API、Key、润色（按常规写法）
 仅在语境明显指向上述含义时才替换，不得强行改写无关内容。`
 
-const systemPrompt = baseSystemPrompt + termGuidance
+const dynamicTermTemplate = `
+动态热词（以下为项目配置的热词表；原文若以同音字或错误拼写出现这些词、且语境明显指向其含义，按标准写法修正）：%s`
 
-const chunkedSystemPrompt = `你是语音听写文本编辑器。下方提供一段录音按时间切片得到的多个识别结果，相邻两段之间存在约 1.5 秒的重叠区（同一段语音被前后两段各识别一次），请按下列步骤处理：
+const chunkedBaseSystemPrompt = `你是语音听写文本编辑器。下方提供一段录音按时间切片得到的多个识别结果，相邻两段之间存在约 1.5 秒的重叠区（同一段语音被前后两段各识别一次），请按下列步骤处理：
 
 1. 去重：相邻两段尾部与头部是同一段语音，需合并重叠区，保留上下文更完整、出现位置更靠后的版本；若两段措辞差异较大，保留语义更准确、更通顺的那段，不要生硬拼接。
 2. 空段处理：若某段内容为空（行末没有可识别的文字，代表该段是静音或无语音），跳过该段，不要输出空行，也不要保留 [段N] 标记，只输出有内容的段拼接后的结果。
@@ -56,10 +58,15 @@ type Client struct {
 	url        string
 	apiKey     string
 	model      string
+	hotwords   *hotwords.Store
 }
 
-func New(httpClient *http.Client, url, apiKey, model string) *Client {
-	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model}
+// New creates a DeepSeek text client. hotwords is an optional reloadable term
+// table appended to the term-correction guidance on every request, so the
+// polish stage fixes homophone/spelling errors for the same hotwords that
+// steer ASR, without a restart when the table changes.
+func New(httpClient *http.Client, url, apiKey, model string, hotwords *hotwords.Store) *Client {
+	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, hotwords: hotwords}
 }
 
 type message struct {
@@ -90,7 +97,7 @@ type response struct {
 }
 
 func (c *Client) Polish(ctx context.Context, rawText string) (string, error) {
-	return c.complete(ctx, systemPrompt, rawText)
+	return c.complete(ctx, c.systemPrompt(), rawText)
 }
 
 // PolishChunks merges overlapping chunks via DeepSeek and returns the polished
@@ -110,7 +117,37 @@ func (c *Client) PolishChunks(ctx context.Context, chunks []string) (string, err
 		}
 		fmt.Fprintf(&sb, "[段%d] %s", i, chunk)
 	}
-	return c.complete(ctx, chunkedSystemPrompt, sb.String())
+	return c.complete(ctx, c.chunkedSystemPrompt(), sb.String())
+}
+
+func (c *Client) dynamicTerms() []string {
+	if c.hotwords == nil {
+		return nil
+	}
+	return c.hotwords.Terms()
+}
+
+func (c *Client) systemPrompt() string {
+	return systemPrompt(c.dynamicTerms())
+}
+
+func (c *Client) chunkedSystemPrompt() string {
+	return chunkedSystemPrompt(c.dynamicTerms())
+}
+
+func systemPrompt(terms []string) string {
+	return baseSystemPrompt + termGuidance + dynamicGuidance(terms)
+}
+
+func chunkedSystemPrompt(terms []string) string {
+	return chunkedBaseSystemPrompt + dynamicGuidance(terms)
+}
+
+func dynamicGuidance(terms []string) string {
+	if len(terms) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(dynamicTermTemplate, strings.Join(terms, "、"))
 }
 
 const retryBackoff = 1200 * time.Millisecond

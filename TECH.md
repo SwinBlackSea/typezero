@@ -41,6 +41,7 @@ macOS 客户端
 - 核心接口：`POST /v1/dictations`，接收音频和输出模式，返回 `raw_text`、`final_text` 及错误信息。
 - 语音识别：`SPEECH_PROVIDER` 可选 `qwen`（DashScope）或 `groq`（Groq Whisper），默认 `qwen`。实测 Groq `whisper-large-v3` 为实时数倍速（10s 音频约 0.4s、30s 约 1.0s、60s 约 1.2s），且不受 DashScope 账号排队影响，为当前首选；Qwen 作为国内可用性的备用。客户端限制单次录音不超过 5 分钟、10 MiB。
 - 文字处理：开发期默认 `deepseek-v4-flash` 并关闭思考模式，负责纠错、去除口头语和重复、补充标点、分段及轻度润色，必须保持原意。原文有明确多事项、步骤或待办信号时使用 `1. 2. 3.` 编号；普通聊天和单一陈述不强行列表化，也不凭空添加标题或事项。
+- 动态热词表：服务端读取 `HOTWORDS_FILE`（默认 `hotwords.txt`，每行一个热词，`#` 开头为注释、空行忽略），按文件 mtime+size 变更惰性重载——编辑保存即生效，无需重新打包或重启服务。热词同时拼入 Groq 的 `prompt`（按 rune 数截断，防止超 224 token 上限）和 DeepSeek 润色的术语纠错指引，ASR 与润色共用同一张表。
 - 模型抽象：定义 `SpeechProvider` 和 `TextProvider`，以后可替换为 OpenAI Transcribe、Groq Whisper、本地 WhisperKit或其他模型。
 - 开发期使用模型最新别名，正式发布时固定模型快照，避免输出随供应商升级而漂移。
 
