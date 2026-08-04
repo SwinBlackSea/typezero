@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -12,6 +13,8 @@ import (
 type sessionState struct {
 	mu            sync.Mutex
 	expectedTotal int
+	createdAt     time.Time
+	lastTouch     time.Time
 	received      map[int]string
 	arrivedAt     map[int]time.Time
 	completedAt   time.Time
@@ -24,9 +27,11 @@ type sessionState struct {
 	asrMax   time.Duration
 }
 
-func newSessionState(expectedTotal int) *sessionState {
+func newSessionState(expectedTotal int, now time.Time) *sessionState {
 	return &sessionState{
 		expectedTotal: expectedTotal,
+		createdAt:     now,
+		lastTouch:     now,
 		received:      make(map[int]string, expectedTotal),
 		arrivedAt:     make(map[int]time.Time, expectedTotal),
 	}
@@ -43,6 +48,9 @@ func (s *sessionState) store(index int, text string, now time.Time) bool {
 	if _, exists := s.received[index]; !exists {
 		s.received[index] = text
 		s.arrivedAt[index] = now
+	}
+	if now.After(s.lastTouch) {
+		s.lastTouch = now
 	}
 	if !s.allArrived && len(s.received) >= s.expectedTotal {
 		s.allArrived = true
@@ -88,18 +96,42 @@ func (s *sessionState) asrMetrics() (total, max time.Duration) {
 	return s.asrTotal, s.asrMax
 }
 
-// lastSeen returns the most recent arrival timestamp, or zero if no chunks
-// have arrived.
-func (s *sessionState) lastSeen() time.Time {
+// touch records activity at now. Called when a chunk request arrives so a
+// session whose chunks are still being processed (ASR in flight, nothing
+// stored yet) is not treated as idle by the janitor.
+func (s *sessionState) touch(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var last time.Time
+	if now.After(s.lastTouch) {
+		s.lastTouch = now
+	}
+}
+
+// evictionAnchor returns the timestamp the janitor compares against its
+// cutoff: the later of creation time and last activity (chunk request
+// arrival or chunk store). Creation time is the floor so a brand-new
+// session whose first chunks are still in ASR survives the sweep.
+func (s *sessionState) evictionAnchor() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	anchor := s.createdAt
+	if s.lastTouch.After(anchor) {
+		anchor = s.lastTouch
+	}
 	for _, t := range s.arrivedAt {
-		if t.After(last) {
-			last = t
+		if t.After(anchor) {
+			anchor = t
 		}
 	}
-	return last
+	return anchor
+}
+
+// receivedCount returns the number of chunks that have arrived so far.
+// Caller must not assume the returned value is stable across other callers.
+func (s *sessionState) receivedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.received)
 }
 
 // SessionStore keeps sessionState objects in memory with a TTL so abandoned
@@ -109,6 +141,13 @@ type SessionStore struct {
 	sessions map[string]*sessionState
 	ttl      time.Duration
 	now      func() time.Time
+
+	// logMu guards the logger only. It is intentionally separate from mu
+	// because session lifecycle methods (getOrCreate, remove, evict,
+	// waitForCompletion) call log() while holding mu; using mu for the
+	// logger would deadlock.
+	logMu  sync.Mutex
+	logger *slog.Logger
 }
 
 func newSessionStore(ttl time.Duration) *SessionStore {
@@ -122,16 +161,47 @@ func newSessionStore(ttl time.Duration) *SessionStore {
 	}
 }
 
+// setLogger attaches a structured logger so the store can emit lifecycle
+// events (create, remove, evict, wait outcome). It is safe to call before
+// any goroutine touches the store.
+func (s *SessionStore) setLogger(logger *slog.Logger) {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	s.logger = logger
+}
+
+func (s *SessionStore) log() *slog.Logger {
+	s.logMu.Lock()
+	logger := s.logger
+	s.logMu.Unlock()
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
+}
+
 // getOrCreate returns the session state for id, creating one when missing.
 // When the session already exists, expectedTotal is ignored.
 func (s *SessionStore) getOrCreate(id string, expectedTotal int) (*sessionState, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	state, ok := s.sessions[id]
 	if ok {
 		if state.expectedTotal != expectedTotal {
+			s.log().Warn("session.getOrCreate.mismatch",
+				"session_id", id,
+				"existing_total", state.expectedTotal,
+				"requested_total", expectedTotal,
+			)
 			return nil, false, errSessionTotalMismatch
 		}
+		state.touch(now)
+		s.log().Debug("session.getOrCreate.found",
+			"session_id", id,
+			"expected_total", expectedTotal,
+			"map_size", len(s.sessions),
+		)
 		return state, false, nil
 	}
 	if expectedTotal <= 0 {
@@ -140,15 +210,21 @@ func (s *SessionStore) getOrCreate(id string, expectedTotal int) (*sessionState,
 	if expectedTotal > maxChunksPerSession {
 		return nil, false, errSessionTotalMismatch
 	}
-	state = newSessionState(expectedTotal)
+	state = newSessionState(expectedTotal, now)
 	s.sessions[id] = state
+	s.log().Info("session.getOrCreate.created",
+		"session_id", id,
+		"expected_total", expectedTotal,
+		"map_size", len(s.sessions),
+	)
 	return state, true, nil
 }
 
 // maxChunksPerSession bounds the number of chunks a single session can hold.
-// With 8s step and 5min max recording, 38 chunks is the realistic upper
-// bound; we round up to 64 to leave headroom. Anything larger is almost
-// certainly a malicious or buggy client trying to exhaust memory.
+// With the current 30s step and 5min max recording, 10 chunks is the
+// realistic upper bound; legacy 8s-step clients produce at most 38. We cap
+// at 64 to leave headroom. Anything larger is almost certainly a malicious
+// or buggy client trying to exhaust memory.
 const maxChunksPerSession = 64
 
 // remove deletes a session and returns whether it existed.
@@ -157,20 +233,25 @@ func (s *SessionStore) remove(id string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.sessions[id]
 	delete(s.sessions, id)
+	s.log().Info("session.remove",
+		"session_id", id,
+		"existed", ok,
+		"map_size", len(s.sessions),
+	)
 	return ok
 }
 
-// evict removes sessions whose last activity is older than ttl. Returns the
-// number of sessions removed. Expired candidates are collected under the
-// store lock and then checked individually so we do not hold the store lock
-// while waiting for each session's own mutex.
+// evict removes sessions whose eviction anchor (later of creation time and
+// last activity) is older than ttl. Returns the number of sessions removed.
+// Expired candidates are collected under the store lock and then checked
+// individually so we do not hold the store lock while waiting for each
+// session's own mutex.
 func (s *SessionStore) evict() (removed int) {
 	cutoff := s.now().Add(-s.ttl)
 	s.mu.Lock()
 	candidates := make([]string, 0, len(s.sessions))
 	for id, state := range s.sessions {
-		last := state.lastSeen()
-		if last.IsZero() || last.Before(cutoff) {
+		if state.evictionAnchor().Before(cutoff) {
 			candidates = append(candidates, id)
 		}
 	}
@@ -184,10 +265,16 @@ func (s *SessionStore) evict() (removed int) {
 			s.mu.Unlock()
 			continue
 		}
-		last := state.lastSeen()
-		if last.IsZero() || last.Before(cutoff) {
+		anchor := state.evictionAnchor()
+		if anchor.Before(cutoff) {
 			delete(s.sessions, id)
 			removed++
+			s.log().Info("session.evict",
+				"session_id", id,
+				"anchor", anchor,
+				"cutoff", cutoff,
+				"map_size", len(s.sessions),
+			)
 		}
 		s.mu.Unlock()
 	}
@@ -224,14 +311,30 @@ func (s *SessionStore) waitForCompletion(ctx context.Context, id string, poll ti
 	state := s.sessions[id]
 	s.mu.Unlock()
 	if state == nil {
+		s.log().Warn("session.waitForCompletion.missing",
+			"session_id", id,
+		)
 		return nil, errSessionMissing
 	}
+	s.log().Info("session.waitForCompletion.start",
+		"session_id", id,
+		"expected_total", state.expectedTotal,
+		"received", state.receivedCount(),
+	)
 	for {
 		if state.isComplete() {
+			s.log().Info("session.waitForCompletion.complete",
+				"session_id", id,
+				"received", state.receivedCount(),
+			)
 			return state.snapshot(), nil
 		}
 		select {
 		case <-ctx.Done():
+			s.log().Warn("session.waitForCompletion.ctxDone",
+				"session_id", id,
+				"err", ctx.Err(),
+			)
 			return nil, ctx.Err()
 		case <-time.After(poll):
 		}
@@ -271,4 +374,19 @@ func (s *SessionStore) chunkMeta(id string) (chunkMeta, bool) {
 		FirstSeen: first,
 		LastSeen:  last,
 	}, true
+}
+
+// chunkSnapshot returns the received count, expected total, and complete
+// flag for a session, or zero values when the session is absent. Used by
+// observability; safe to call concurrently.
+func (s *SessionStore) chunkSnapshot(id string) (received, expectedTotal int, complete bool) {
+	s.mu.Lock()
+	state, ok := s.sessions[id]
+	s.mu.Unlock()
+	if !ok {
+		return 0, 0, false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return len(state.received), state.expectedTotal, state.allArrived
 }

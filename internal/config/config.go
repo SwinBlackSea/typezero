@@ -29,6 +29,7 @@ type Config struct {
 	ProviderTimeout   time.Duration
 	RequestTimeout    time.Duration
 	RequestsPerMinute int
+	ASRConcurrency    int
 	TrustedProxyCIDR  string
 	SessionTTL        time.Duration
 }
@@ -46,7 +47,8 @@ func FromEnv() (Config, error) {
 		MaxAudioDuration:  5 * time.Minute,
 		ProviderTimeout:   90 * time.Second,
 		RequestTimeout:    100 * time.Second,
-		RequestsPerMinute: 10,
+		RequestsPerMinute: 60,
+		ASRConcurrency:    2,
 		TrustedProxyCIDR:  strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
 		SessionTTL:        5 * time.Minute,
 	}
@@ -70,6 +72,12 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.RequestsPerMinute < 1 {
 		return Config{}, errors.New("REQUESTS_PER_MINUTE must be positive")
+	}
+	if cfg.ASRConcurrency, err = intEnv("ASR_CONCURRENCY", cfg.ASRConcurrency); err != nil {
+		return Config{}, err
+	}
+	if cfg.ASRConcurrency < 1 {
+		return Config{}, errors.New("ASR_CONCURRENCY must be positive")
 	}
 	if err := validateProviderURL("QWEN_API_URL", cfg.QwenURL); err != nil {
 		return Config{}, err

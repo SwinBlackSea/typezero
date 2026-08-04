@@ -124,8 +124,7 @@ struct DictationClient: Sendable {
 
         let outcomes = try await uploadChunks(
             sessionID: sessionID,
-            chunks: chunks,
-            totalDurationMs: recording.durationMilliseconds
+            chunks: chunks
         )
 
         let requestMilliseconds = elapsedMilliseconds(since: requestStarted)
@@ -212,8 +211,7 @@ struct DictationClient: Sendable {
 
     private func uploadChunks(
         sessionID: String,
-        chunks: [AudioChunker.Chunk],
-        totalDurationMs: Int
+        chunks: [AudioChunker.Chunk]
     ) async throws -> [ChunkOutcome] {
         var outcomes: [ChunkOutcome?] = Array(repeating: nil, count: chunks.count)
         try await withThrowingTaskGroup(of: (Int, ChunkOutcome).self) { group in
@@ -226,7 +224,6 @@ struct DictationClient: Sendable {
                         chunk: chunk,
                         chunkTotal: chunks.count,
                         isLast: isLast,
-                        totalDurationMs: totalDurationMs,
                         dashscopeAPIKey: dashscopeAPIKey,
                         deepSeekAPIKey: deepSeekAPIKey
                     )
@@ -249,13 +246,17 @@ struct DictationClient: Sendable {
         chunk: AudioChunker.Chunk,
         chunkTotal: Int,
         isLast: Bool,
-        totalDurationMs: Int,
         dashscopeAPIKey: String,
         deepSeekAPIKey: String
     ) async throws -> ChunkOutcome {
         let boundary = "TypeZero-\(UUID().uuidString)"
         var body = Data()
-        body.appendField(name: "duration_ms", value: String(totalDurationMs), boundary: boundary)
+        // Declare this chunk's own duration, not the whole recording's:
+        // the server validates against the parsed audio length and a full
+        // recording that slightly exceeds 5 minutes would otherwise reject
+        // every chunk.
+        let chunkDurationMs = chunk.chunkEndMilliseconds - chunk.chunkStartMilliseconds
+        body.appendField(name: "duration_ms", value: String(chunkDurationMs), boundary: boundary)
         body.appendField(name: "output_mode", value: "polished", boundary: boundary)
         body.appendField(name: "session_id", value: sessionID, boundary: boundary)
         body.appendField(name: "chunk_index", value: String(chunk.chunkIndex), boundary: boundary)
@@ -268,9 +269,12 @@ struct DictationClient: Sendable {
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        // Per-chunk ASR latency dominates; the final chunk also waits for
-        // earlier ASR results + polish, so use the full request timeout.
-        request.timeoutInterval = isLast ? 105 : 60
+        // Per-chunk ASR latency dominates, and a non-final chunk can also
+        // sit behind the server's ASR semaphore before its transcription
+        // starts. Keep every chunk at or above the server request timeout
+        // (100s) so slow upstream ASR surfaces as a server-side result
+        // instead of a client-side timeout.
+        request.timeoutInterval = 105
         request.httpBody = body
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -336,13 +340,16 @@ struct DictationClient: Sendable {
     }
 
     private func aggregateChunkAsrTotal(_ outcomes: [ChunkOutcome]) -> Int? {
-        // Sum every chunk's reported asr duration. The server now keeps a
-        // running total on the session and emits it on each response, so
-        // summing is equivalent to reading the last entry but does not
-        // break if the server falls back to a per-chunk metric.
+        // The server reports a session-cumulative ASR duration on every
+        // chunk response, so the final chunk's value already is the
+        // authoritative total; summing would count earlier chunks over and
+        // over. Fall back to the max observed value if the final response
+        // somehow lacks the metric.
+        if let cumulative = outcomes.last?.timing.chunkAsrTotalMilliseconds {
+            return cumulative
+        }
         let values = outcomes.compactMap { $0.timing.chunkAsrTotalMilliseconds }
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +)
+        return values.max()
     }
 
     private func aggregateChunkAsrMax(_ outcomes: [ChunkOutcome]) -> Int? {

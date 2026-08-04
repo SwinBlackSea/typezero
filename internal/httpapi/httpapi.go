@@ -29,6 +29,7 @@ type Dependencies struct {
 	MaxDuration      time.Duration
 	RequestTimeout   time.Duration
 	RequestsPerMin   int
+	ASRConcurrency   int
 	TrustedProxyCIDR string
 	SessionTTL       time.Duration
 }
@@ -43,6 +44,7 @@ type API struct {
 	maxDuration    time.Duration
 	requestTimeout time.Duration
 	limiter        *rateLimiter
+	asrSem         chan struct{}
 	trustedProxy   *net.IPNet
 	sessions       *SessionStore
 }
@@ -111,6 +113,9 @@ func durationMilliseconds(value time.Duration) float64 {
 }
 
 func New(deps Dependencies) http.Handler {
+	if deps.ASRConcurrency < 1 {
+		deps.ASRConcurrency = 1
+	}
 	api := &API{
 		speech:         deps.Speech,
 		text:           deps.Text,
@@ -121,7 +126,11 @@ func New(deps Dependencies) http.Handler {
 		maxDuration:    deps.MaxDuration,
 		requestTimeout: deps.RequestTimeout,
 		limiter:        newRateLimiter(deps.RequestsPerMin),
+		asrSem:         make(chan struct{}, deps.ASRConcurrency),
 		sessions:       newSessionStore(deps.SessionTTL),
+	}
+	if deps.Logger != nil {
+		api.sessions.setLogger(deps.Logger.With("component", "session_store"))
 	}
 	if deps.TrustedProxyCIDR != "" {
 		_, api.trustedProxy, _ = net.ParseCIDR(deps.TrustedProxyCIDR)
@@ -141,6 +150,21 @@ func New(deps Dependencies) http.Handler {
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// acquireASR reserves one ASR slot so the number of concurrent upstream
+// transcription calls matches the provider-side quota; excess chunks queue
+// here instead of queueing (and slowing down) at the provider. ctx
+// cancellation aborts the wait.
+func (a *API) acquireASR(ctx context.Context) error {
+	select {
+	case a.asrSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *API) releaseASR() { <-a.asrSem }
 
 func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
@@ -261,7 +285,15 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID string, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
 	timings.asrRan = true
 	asrStarted := time.Now()
+	if err := a.acquireASR(ctx); err != nil {
+		status, code := providerFailure(ctx, "transcription_failed")
+		a.writeTimingHeader(w, timings)
+		a.fail(w, status, code, "语音识别失败，请重试")
+		a.log(requestID, "", 0, started, *timings, code, err)
+		return
+	}
 	rawText, err := speech.Transcribe(ctx, audio)
+	a.releaseASR()
 	timings.asr = time.Since(asrStarted)
 	if err != nil {
 		status, code := providerFailure(ctx, "transcription_failed")
@@ -311,7 +343,18 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	}
 
 	asrStarted := time.Now()
+	if asrErr := a.acquireASR(ctx); asrErr != nil {
+		// Slot wait failed (request deadline or client disconnect): drop
+		// the session so the client can retry the whole sequence.
+		a.sessions.remove(sessionID)
+		status, code := providerFailure(ctx, "transcription_failed")
+		a.writeTimingHeader(w, timings)
+		a.fail(w, status, code, "语音识别失败，请重试")
+		a.log(requestID, sessionID, chunkTotal, started, *timings, code, asrErr)
+		return
+	}
 	rawText, asrErr := speech.Transcribe(ctx, audio)
+	a.releaseASR()
 	asrElapsed := time.Since(asrStarted)
 
 	// Fold this chunk's ASR into the session's running totals so the final
@@ -350,6 +393,23 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 
 	complete := state.store(chunkIndex, rawText, time.Now())
 
+	if isLast {
+		// Snapshot the session immediately after storing this chunk so we
+		// can correlate the wait outcome with the post-store state.
+		curReceived, curTotal, curComplete := a.sessions.chunkSnapshot(sessionID)
+		a.logger.Info("dictation.handleChunked.postStore",
+			"request_id", requestID,
+			"session_id", sessionID,
+			"chunk_index", chunkIndex,
+			"chunk_total", chunkTotal,
+			"is_last", isLast,
+			"complete", complete,
+			"received", curReceived,
+			"expected_total", curTotal,
+			"complete_signal", curComplete,
+		)
+	}
+
 	if !isLast {
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{
@@ -365,6 +425,20 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	}
 
 	if !complete {
+		// Pre-wait snapshot: how many chunks have arrived so far. If this
+		// log line shows 0 (or 1) but the waitForCompletion log says the
+		// session is missing, something is removing the session under us.
+		prevReceived, prevTotal, prevComplete := a.sessions.chunkSnapshot(sessionID)
+		a.logger.Info("dictation.waitForCompletion.pre",
+			"request_id", requestID,
+			"session_id", sessionID,
+			"chunk_index", chunkIndex,
+			"chunk_total", chunkTotal,
+			"is_last", isLast,
+			"received", prevReceived,
+			"expected_total", prevTotal,
+			"complete", prevComplete,
+		)
 		// Other chunks haven't arrived yet. Wait for them or for ctx to expire.
 		all, waitErr := a.sessions.waitForCompletion(ctx, sessionID, 10*time.Millisecond)
 		if waitErr != nil {
@@ -378,6 +452,15 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 			a.fail(w, http.StatusBadRequest, waitErr.Error(), "会话状态异常")
 			a.log(requestID, sessionID, chunkTotal, started, *timings, "session_error", waitErr)
 			return
+		}
+		// Every chunk is stored now, which means every recordASR has
+		// happened. Refresh the cumulative metrics: when this chunk's own
+		// ASR finished before the others', the snapshot taken at its
+		// recordASR time is missing them and would under-report the total.
+		cumulative, observedMax := state.asrMetrics()
+		timings.chunkAsrTotal = cumulative
+		if observedMax > timings.chunkAsrMax {
+			timings.chunkAsrMax = observedMax
 		}
 		// snapshot already includes this chunk's text (we stored it before
 		// calling waitForCompletion above).
@@ -511,18 +594,6 @@ func (e *clientError) Error() string { return e.code }
 
 func (a *API) readAudio(r *http.Request) (provider.Audio, audioinfo.Info, error) {
 	file, header, err := r.FormFile("audio")
-	if err == nil {
-		// DEBUG: dump first 80 bytes of uploaded audio
-		preview := make([]byte, 80)
-		if _, e := file.Read(preview); e == nil {
-			a.logger.Info("audio preview",
-				"filename", header.Filename,
-				"size", header.Size,
-				"head_hex", fmt.Sprintf("%x", preview),
-			)
-		}
-		_, _ = file.Seek(0, io.SeekStart)
-	}
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) {
 			return provider.Audio{}, audioinfo.Info{}, &clientError{http.StatusBadRequest, "audio_required", "缺少 audio 文件"}

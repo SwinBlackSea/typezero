@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -439,6 +440,105 @@ func TestDictationChunkedCumulativeASRReporting(t *testing.T) {
 	// with a numeric dur.
 	if !strings.Contains(final.serverTiming, "asr_chunks;dur=") {
 		t.Fatalf("Server-Timing missing asr_chunks duration: %q", final.serverTiming)
+	}
+}
+
+// gatedSpeech blocks the first Transcribe call until gate is closed so the
+// final chunk can finish its own ASR before an earlier chunk does.
+type gatedSpeech struct {
+	mu        sync.Mutex
+	firstUsed bool
+	gate      chan struct{}
+	blocked   chan struct{}
+}
+
+func (g *gatedSpeech) Transcribe(ctx context.Context, _ provider.Audio) (string, error) {
+	g.mu.Lock()
+	shouldBlock := !g.firstUsed
+	g.firstUsed = true
+	g.mu.Unlock()
+	if shouldBlock {
+		close(g.blocked)
+		select {
+		case <-g.gate:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return "文字", nil
+}
+
+func parseServerTimingDur(t *testing.T, header, metric string) float64 {
+	t.Helper()
+	for _, item := range strings.Split(header, ",") {
+		item = strings.TrimSpace(item)
+		if !strings.HasPrefix(item, metric+";") {
+			continue
+		}
+		for _, attr := range strings.Split(item, ";")[1:] {
+			if strings.HasPrefix(attr, "dur=") {
+				value, err := strconv.ParseFloat(strings.TrimPrefix(attr, "dur="), 64)
+				if err != nil {
+					t.Fatalf("invalid dur in Server-Timing %q", header)
+				}
+				return value
+			}
+		}
+	}
+	t.Fatalf("Server-Timing %q missing metric %q", header, metric)
+	return 0
+}
+
+// Regression: when the final chunk's own ASR finishes before the other
+// chunks' ASR, the cumulative metric snapshotted at its recordASR time is
+// stale. The final response must still report the full session total.
+func TestDictationChunkedFinalResponseIncludesLateASR(t *testing.T) {
+	speech := &gatedSpeech{gate: make(chan struct{}), blocked: make(chan struct{})}
+	text := &textStub{chunks: []string{"merged"}}
+	handler := New(Dependencies{
+		Speech:         speech,
+		Text:           text,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+		ASRConcurrency: 2,
+	})
+
+	const sessionID = "sess-late-asr"
+	firstDone := make(chan chunkUploadResult, 1)
+	go func() {
+		firstDone <- uploadChunk(t, handler, sessionID, 0, 2, false, testWAV(time.Second), "1000")
+	}()
+
+	// Wait until chunk 0 is blocked inside Transcribe, then send the final
+	// chunk, whose ASR completes immediately.
+	<-speech.blocked
+	finalDone := make(chan chunkUploadResult, 1)
+	go func() {
+		finalDone <- uploadChunk(t, handler, sessionID, 1, 2, true, testWAV(time.Second), "1000")
+	}()
+
+	// Give the final chunk time to finish its own ASR and start waiting for
+	// chunk 0, then release chunk 0.
+	time.Sleep(100 * time.Millisecond)
+	close(speech.gate)
+
+	final := <-finalDone
+	first := <-firstDone
+
+	if first.statusCode != http.StatusOK {
+		t.Fatalf("chunk 0 status = %d, body = %s", first.statusCode, first.body)
+	}
+	if final.statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, body = %s", final.statusCode, final.body)
+	}
+	// Chunk 0 was blocked for at least ~100ms, so the session-cumulative
+	// ASR duration in the final response must reflect it. Without the
+	// refresh after waitForCompletion the value would be ~0.
+	if dur := parseServerTimingDur(t, final.serverTiming, "asr_chunks"); dur < 50 {
+		t.Fatalf("asr_chunks;dur = %.3f ms, final response missed the late chunk's ASR time", dur)
 	}
 }
 

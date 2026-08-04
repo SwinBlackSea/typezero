@@ -42,6 +42,7 @@ func main() {
 		MaxDuration:      cfg.MaxAudioDuration,
 		RequestTimeout:   cfg.RequestTimeout,
 		RequestsPerMin:   cfg.RequestsPerMinute,
+		ASRConcurrency:   cfg.ASRConcurrency,
 		TrustedProxyCIDR: cfg.TrustedProxyCIDR,
 		SessionTTL:       cfg.SessionTTL,
 	})

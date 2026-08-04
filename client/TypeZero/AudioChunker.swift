@@ -4,14 +4,18 @@ import Foundation
 /// overlapping chunks suitable for the server's chunked dictation endpoint.
 ///
 /// Layout:
-///   - step:   8.0 s  (distance between chunk start times)
-///   - window: 9.5 s  (each chunk's audio length)
-///   - overlap: 1.5 s (adjacent chunks share this much audio)
+///   - step:   30.0 s (distance between chunk start times)
+///   - window: 32.0 s (each chunk's audio length)
+///   - overlap: 2.0 s (adjacent chunks share this much audio)
 ///   - final chunk may be shorter than `window` when totalDuration is not a
 ///     multiple of `step`.
 ///
 /// The chunked transcript pipeline relies on this overlap so the server can
 /// hand both halves of an overlap region to the LLM and ask it to merge.
+///
+/// The step is sized to keep a full 5-minute recording at about 10 chunks:
+/// fewer requests means less per-request overhead and less provider-side
+/// queueing, while ~7% duplicated audio keeps the merge prompt reliable.
 ///
 /// Recordings from AVAudioRecorder occasionally include auxiliary RIFF
 /// chunks (JUNK, FLLR, LIST) ahead of `data`, so we walk the source file's
@@ -26,9 +30,9 @@ struct AudioChunker {
 
     /// Step (seconds) between consecutive chunk starts. The chunk window is
     /// step + overlap so each pair of neighbours shares `overlap` seconds.
-    static let stepSeconds: Double = 8.0
+    static let stepSeconds: Double = 30.0
     /// Overlap (seconds) shared between adjacent chunks.
-    static let overlapSeconds: Double = 1.5
+    static let overlapSeconds: Double = 2.0
     /// Per-chunk audio length (seconds) sent to ASR.
     static var windowSeconds: Double { stepSeconds + overlapSeconds }
 
