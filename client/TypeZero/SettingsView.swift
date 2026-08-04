@@ -86,6 +86,7 @@ struct SettingsView: View {
                         )
                     }
                 }
+                .id(model.permissionRevision)
 
                 Text("修改权限后，回到 TypeZero 即可自动重新加载快捷键。")
                     .font(.caption)

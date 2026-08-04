@@ -16,6 +16,7 @@ final class StatusBarItemView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
+    private var popoverContent: NSHostingController<MenuContentView>!
     private var settingsWindow: NSWindow?
     private var model: AppModel!
     private var imageView: NSImageView!
@@ -29,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onStatusChanged = { [weak self] phase in
             self?.updateIcon(for: phase)
             self?.recordingOverlay.update(for: phase)
+            self?.updatePopoverSize(for: phase)
         }
         model.onAudioLevelChanged = { [weak self] level in
             self?.recordingOverlay.updateAudioLevel(level)
@@ -73,9 +75,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.contentSize = NSSize(width: 350, height: 340)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(
-            rootView: MenuContentView(model: model)
-        )
+        var menuContent = MenuContentView(model: model)
+        menuContent.onOpenSettings = { [weak self] in
+            self?.openSettings()
+        }
+        let hosting = NSHostingController(rootView: menuContent)
+        popoverContent = hosting
+        popover.contentViewController = hosting
+    }
+
+    /// The popover must grow when the raw-text fallback panel is shown
+    /// (success/failure states hide it, and the fixed 340pt height would clip
+    /// the buttons below the GroupBox on the real device).
+    private func updatePopoverSize(for phase: AppModel.Phase) {
+        guard popover != nil, popoverContent != nil else { return }
+        let size: NSSize
+        switch phase {
+        case .rawTextAvailable:
+            size = NSSize(width: 350, height: 460)
+        default:
+            size = NSSize(width: 350, height: 340)
+        }
+        popover.contentSize = size
+        popoverContent.preferredContentSize = size
     }
 
     private func togglePopover() {
@@ -95,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 540),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
