@@ -40,6 +40,7 @@ struct ProcessingTiming: Sendable {
     let polishMilliseconds: Int?
     let chunkAsrTotalMilliseconds: Int?
     let chunkAsrMaxMilliseconds: Int?
+    let asrSpanMilliseconds: Int?
     let mergeDedupeMilliseconds: Int?
     let chunkCount: Int?
     let emptyChunkCount: Int?
@@ -54,7 +55,7 @@ struct ProcessingTiming: Sendable {
         if let chunkCount, chunkCount > 1 {
             let totalText = chunkAsrTotalMilliseconds.map(formattedSeconds) ?? "—"
             let maxText = chunkAsrMaxMilliseconds.map(formattedSeconds) ?? "—"
-            parts.append("识别\(chunkCount)段 \(totalText)（最长 \(maxText)）")
+            parts.append("识别\(chunkCount)段 累计 \(totalText)（最长 \(maxText)）")
         } else if let asrMilliseconds {
             parts.append("识别 \(formattedSeconds(asrMilliseconds))")
         }
@@ -158,6 +159,7 @@ struct DictationClient: Sendable {
             polishMilliseconds: chunks.count == 1 ? lastOutcome.timing.polishMilliseconds : nil,
             chunkAsrTotalMilliseconds: aggregateChunkAsrTotal(outcomes),
             chunkAsrMaxMilliseconds: aggregateChunkAsrMax(outcomes),
+            asrSpanMilliseconds: lastOutcome.timing.asrSpanMilliseconds,
             mergeDedupeMilliseconds: lastOutcome.timing.mergeDedupeMilliseconds,
             chunkCount: chunks.count,
             emptyChunkCount: emptyChunks > 0 ? emptyChunks : nil,
@@ -334,6 +336,7 @@ struct DictationClient: Sendable {
             polishMilliseconds: timing.polishMilliseconds,
             chunkAsrTotalMilliseconds: nil,
             chunkAsrMaxMilliseconds: nil,
+            asrSpanMilliseconds: nil,
             mergeDedupeMilliseconds: nil,
             chunkCount: nil,
             emptyChunkCount: nil,
@@ -438,7 +441,42 @@ struct DictationClient: Sendable {
                     chunkCount: nil, status: nil, rawText: "",
                     finalText: nil, warning: nil
                 ),
-                timing: ServerTiming(intakeMilliseconds: nil, asrMilliseconds: nil, polishMilliseconds: nil, mergeDedupeMilliseconds: nil, chunkAsrTotalMilliseconds: nil, chunkAsrMaxMilliseconds: nil, chunkCount: nil),
+                timing: ServerTiming(intakeMilliseconds: nil, asrMilliseconds: nil, polishMilliseconds: nil, mergeDedupeMilliseconds: nil, chunkAsrTotalMilliseconds: nil, chunkAsrMaxMilliseconds: nil, asrSpanMilliseconds: nil, chunkCount: nil),
+                errorMessage: "服务响应无效"
+            )
+        }
+        let timing = ServerTiming.parse(httpResponse.value(forHTTPHeaderField: "Server-Timing"))
+        let statusOK = (200..<300).contains(httpResponse.statusCode)
+        if !statusOK {
+            let message: String
+            if let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data) {
+                message = envelope.error.message
+            } else {
+                message = "服务请求失败（\(httpResponse.statusCode)）"
+            }
+            return ChunkOutcome(
+                response: DictationResponse(
+                    requestID: "", sessionID: nil, chunkIndex: nil,
+                    chunkCount: nil, status: nil, rawText: "",
+                    finalText: nil, warning: nil
+                ),
+                timing: timing,
+                errorMessage: "第\(chunk.chunkIndex + 1)段：\(message)"
+            )
+        }
+        guard let decoded = try? JSONDecoder().decode(DictationResponse.self, from: data) else {
+            return ChunkOutcome(
+                response: DictationResponse(
+                    requestID: "", sessionID: nil, chunkIndex: nil,
+                    chunkCount: nil, status: nil, rawText: "",
+                    finalText: nil, warning: nil
+                ),
+                timing: timing,
+                errorMessage: "第\(chunk.chunkIndex + 1)段返回结果无法解析"
+            )
+        }
+        return ChunkOutcome(response: decoded, timing: timing, errorMessage: nil)
+    }
                 errorMessage: "服务响应无效"
             )
         }
@@ -520,6 +558,7 @@ struct DictationClient: Sendable {
             polishMilliseconds: singleShot ? timing.polishMilliseconds : nil,
             chunkAsrTotalMilliseconds: timing.chunkAsrTotalMilliseconds,
             chunkAsrMaxMilliseconds: timing.chunkAsrMaxMilliseconds,
+            asrSpanMilliseconds: timing.asrSpanMilliseconds,
             mergeDedupeMilliseconds: timing.mergeDedupeMilliseconds,
             chunkCount: chunkCount,
             emptyChunkCount: nil,
@@ -539,6 +578,7 @@ private struct ServerTiming {
     let mergeDedupeMilliseconds: Int?
     let chunkAsrTotalMilliseconds: Int?
     let chunkAsrMaxMilliseconds: Int?
+    let asrSpanMilliseconds: Int?
     let chunkCount: Int?
 
     static func parse(_ header: String?) -> ServerTiming {
@@ -550,6 +590,7 @@ private struct ServerTiming {
                 mergeDedupeMilliseconds: nil,
                 chunkAsrTotalMilliseconds: nil,
                 chunkAsrMaxMilliseconds: nil,
+                asrSpanMilliseconds: nil,
                 chunkCount: nil
             )
         }
@@ -583,6 +624,7 @@ private struct ServerTiming {
         let mergeDedupe = values["merge_dedupe|dur"]
         let chunkAsrTotal = values["asr_chunks|dur"]
         let chunkAsrMax = values["asr_chunks_max|dur"]
+        let asrSpan = values["asr_span|dur"]
         let chunkCount: Int? = {
             if let n = pairValues["asr_chunks_n"] { return Int(n) }
             return nil
@@ -594,6 +636,7 @@ private struct ServerTiming {
             mergeDedupeMilliseconds: mergeDedupe,
             chunkAsrTotalMilliseconds: chunkAsrTotal,
             chunkAsrMaxMilliseconds: chunkAsrMax,
+            asrSpanMilliseconds: asrSpan,
             chunkCount: chunkCount
         )
     }
