@@ -105,6 +105,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Menu-bar apps (LSUIElement) on macOS 12 do not reliably show a
+            // transient NSPopover until the app is active; without activating
+            // first, clicking the status item appears to do nothing.
+            NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
