@@ -2,21 +2,14 @@ import AppKit
 import SwiftUI
 
 final class StatusBarItemView: NSView {
-    var onClick: (() -> Void)?
+    var onMouseUp: (() -> Void)?
 
     override func mouseDown(with event: NSEvent) {
-        // Ignore mouseDown: showing a transient NSPopover here lets the same
-        // click's mouseUp (outside the popover window) dismiss it instantly.
-        // Opening on mouseUp matches how statusItem.button.action behaves and
-        // keeps the panel visible.
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        onClick?()
+        onMouseUp?()
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        onClick?()
+        onMouseUp?()
     }
 }
 
@@ -71,8 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let containerView = StatusBarItemView()
         containerView.frame = NSRect(x: 0, y: 0, width: 30, height: 22)
         containerView.addSubview(imageView)
-        containerView.onClick = { [weak self] in
-            NSLog("TypeZero: status item clicked")
+        containerView.onMouseUp = { [weak self] in
             self?.togglePopover()
         }
 
@@ -81,18 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPopover() {
         popover = NSPopover()
+        popover.contentSize = NSSize(width: 350, height: 340)
         popover.behavior = .transient
         var menuContent = MenuContentView(model: model)
         menuContent.onOpenSettings = { [weak self] in
             self?.openSettings()
         }
         let hosting = NSHostingController(rootView: menuContent)
-        // macOS 12 sizes the popover from the content controller's
-        // preferredContentSize; without an explicit size the SwiftUI hosting
-        // controller can report a zero fitting size and the panel shows up
-        // blank or not at all.
-        hosting.preferredContentSize = NSSize(width: 350, height: 340)
-        popover.contentSize = hosting.preferredContentSize
         popoverContent = hosting
         popover.contentViewController = hosting
     }
@@ -114,27 +101,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePopover() {
-        guard let statusItem = statusItem, let view = statusItem.view else {
-            NSLog("TypeZero: togglePopover without status view")
-            return
-        }
+        guard let view = statusItem.view else { return }
         if popover.isShown {
-            NSLog("TypeZero: closing popover")
             popover.performClose(nil)
-            return
-        }
-        NSLog("TypeZero: showing popover")
-        // Menu-bar apps (LSUIElement) on macOS 12 need the app active before a
-        // transient NSPopover will display, and showing it in the same event
-        // as the activation can still get swallowed. Defer the show to the
-        // next runloop tick so the click reliably opens the panel.
-        NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  let statusItem = self.statusItem,
-                  let view = statusItem.view else { return }
-            self.popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
-            self.popover.contentViewController?.view.window?.makeKey()
+        } else {
+            popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
         }
     }
 

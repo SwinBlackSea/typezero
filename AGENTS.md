@@ -75,16 +75,13 @@ settings:
 
 ```swift
 class StatusBarItemView: NSView {
-    var onClick: (() -> Void)?
-    // 弹 NSPopover 必须在 mouseUp 触发：mouseDown 弹 transient 面板会被
-    // 同一记点击的 mouseUp（落在面板外）立刻关掉，真机表现为点了没反应。
-    override func mouseDown(with event: NSEvent) {}
-    override func mouseUp(with event: NSEvent) { onClick?() }
+    var onMouseUp: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onMouseUp?() }
 }
 statusItem.view = containerView
 ```
 
-不要用 `NSHostingView` 包裹 SwiftUI View（`onTapGesture` 不响应），不要用 `statusItem.button.action`（macOS 12 不触发）。弹 `NSPopover` 前先 `NSApp.activate(ignoringOtherApps: true)` 并把 `show` 延到下一 RunLoop，否则面板可能不显示或闪退。
+不要用 `NSHostingView` 包裹 SwiftUI View（`onTapGesture` 不响应），不要用 `statusItem.button.action`（macOS 12 不触发）。
 
 ### 规则 6：非 @MainActor 类不能通过 Combine 观察 AppModel
 
