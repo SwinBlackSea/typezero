@@ -125,7 +125,7 @@ struct DictationClient: Sendable {
         }
 
         guard !chunks.isEmpty else {
-            throw ClientError.invalidRecording("录音文件解析失败（\(Self.megabytes(audio.count)) MB），无法切分音频")
+            throw ClientError.invalidRecording(Self.parseFailureMessage(audio: audio))
         }
 
         let sessionID = UUID().uuidString
@@ -219,7 +219,7 @@ struct DictationClient: Sendable {
             throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
         guard !chunks.isEmpty, let lastChunk = chunks.last else {
-            throw ClientError.invalidRecording("录音文件解析失败（\(Self.megabytes(audio.count)) MB），无法切分音频")
+            throw ClientError.invalidRecording(Self.parseFailureMessage(audio: audio))
         }
         let preparationMilliseconds = elapsedMilliseconds(since: preparationStarted)
         let requestStarted = Date()
@@ -563,6 +563,27 @@ struct DictationClient: Sendable {
     private static func expectedWAVBytes(durationMs: Int) -> Int {
         let seconds = durationMs / 1000
         return AudioChunker.headerSize + seconds * AudioChunker.bytesPerSecond
+    }
+
+    /// Diagnostic for parse failures: formats the failure message with the
+    /// file's magic bytes so the exact content can be identified, and keeps
+    /// a copy of the raw recording under ~/typezero-debug/ for inspection.
+    private static func parseFailureMessage(audio: Data) -> String {
+        preserveParseFailure(data: audio)
+        return "录音文件解析失败（\(Self.megabytes(audio.count)) MB，头部=\(Self.debugHeader(audio))），无法切分音频"
+    }
+
+    private static func debugHeader(_ data: Data) -> String {
+        let bytes = [UInt8](data.prefix(16))
+        return bytes.map { String(format: "%02X", $0) }.joined()
+    }
+
+    private static func preserveParseFailure(data: Data) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("typezero-debug", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("failed-\(UUID().uuidString).wav")
+        try? data.write(to: file, options: .atomic)
     }
 }
 
