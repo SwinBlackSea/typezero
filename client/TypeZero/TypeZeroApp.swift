@@ -40,12 +40,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         model?.refreshShortcutMonitoring()
-        // Re-sync the floating capsule to the actual phase so a panel left
-        // over from an interrupted recording/processing state cannot linger
-        // as an empty transparent box once the app becomes active again.
-        if let phase = model?.phase {
-            recordingOverlay.update(for: phase)
-        }
     }
 
     private func updateIcon(for phase: AppModel.Phase) {
@@ -80,9 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 350, height: 340)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(
-            rootView: MenuContentView(model: model) { [weak self] in
-                self?.openSettings()
-            }
+            rootView: MenuContentView(model: model)
         )
     }
 
@@ -97,17 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openSettings() {
-        // Close the menu popover first so the transient panel cannot linger
-        // behind the settings window as a transparent ghost.
-        if popover.isShown {
-            popover.performClose(nil)
-        }
         if let window = settingsWindow, window.isVisible {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = settingsWindow ?? NSWindow(
+        let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,

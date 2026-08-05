@@ -3,7 +3,6 @@ import SwiftUI
 
 struct MenuContentView: View {
     @ObservedObject var model: AppModel
-    var onOpenSettings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -56,7 +55,9 @@ struct MenuContentView: View {
             Divider()
 
             HStack {
-                Button("设置…") { onOpenSettings() }
+                Button("设置…") {
+                    openSettingsWindow()
+                }
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }
             }
@@ -84,4 +85,18 @@ struct MenuContentView: View {
         }
     }
 
+    private func openSettingsWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "TypeZero 设置"
+        window.contentView = NSHostingView(rootView: SettingsView(model: model))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
