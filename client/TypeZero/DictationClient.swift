@@ -132,10 +132,12 @@ struct DictationClient: Sendable {
             throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
 
-        guard !chunks.isEmpty else {
-            // Chunking could not produce a usable split after retries; fall
-            // back to a whole-file upload so the audio still reaches the
-            // server and gets transcribed there.
+        guard !chunks.isEmpty,
+              Self.isUsableChunkSet(chunks, durationMs: recording.durationMilliseconds, mustCover: []) else {
+            // Chunking could not produce a complete split after retries (the
+            // stop-time read may have seen a truncated file). Fall back to a
+            // whole-file upload so the audio still reaches the server and
+            // gets transcribed there.
             return try await upload(recording: recording)
         }
 
@@ -230,12 +232,13 @@ struct DictationClient: Sendable {
         guard audio.count <= 12 << 20 else {
             throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
-        guard !chunks.isEmpty, let lastChunk = chunks.last else {
+        guard let lastChunk = chunks.last,
+              Self.isUsableChunkSet(chunks, durationMs: recording.durationMilliseconds, mustCover: alreadyUploaded) else {
             // The stop-time read never stabilized into a chunk set that
-            // covers the segments already uploaded during recording. Fall
-            // back to a whole-file single shot rather than silently
-            // re-uploading an earlier chunk as the final one (which would
-            // drop the tail of the recording).
+            // covers the segments already uploaded during recording and
+            // spans the full declared duration. Fall back to a whole-file
+            // single shot rather than silently finalizing with a truncated
+            // set (which would drop the tail of the recording).
             return try await upload(recording: recording)
         }
         let preparationMilliseconds = elapsedMilliseconds(since: preparationStarted)
@@ -595,7 +598,7 @@ struct DictationClient: Sendable {
         guard let lastChunk = chunks.last else { return false }
         let indexes = Set(chunks.map { $0.chunkIndex })
         guard mustCover.allSatisfy({ indexes.contains($0) }) else { return false }
-        let minimumEndMs = max(0, durationMs - 2000)
+        let minimumEndMs = max(0, durationMs - 500)
         return lastChunk.chunkEndMilliseconds >= minimumEndMs
     }
 
@@ -607,7 +610,7 @@ struct DictationClient: Sendable {
     private static func readRecordingData(url: URL, expectedBytes: Int) async throws -> Data {
         var data = try Data(contentsOf: url)
         var attempt = 0
-        while data.count < expectedBytes && attempt < 15 {
+        while data.count < expectedBytes && attempt < 30 {
             try? await Task.sleep(nanoseconds: 100_000_000)
             data = try Data(contentsOf: url)
             attempt += 1
