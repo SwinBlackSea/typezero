@@ -57,7 +57,7 @@ struct SettingsView: View {
                             }
                             Spacer(minLength: 12)
                             Picker("切割间隔", selection: $model.chunkSecondsSetting) {
-                                ForEach([0, 10, 20, 30, 60], id: \.self) { seconds in
+                                ForEach([0, 10, 20, 30, 60] as [Int], id: \.self) { seconds in
                                     Text(seconds == 0 ? "不切割" : "\(seconds) 秒").tag(seconds)
                                 }
                             }
@@ -68,7 +68,7 @@ struct SettingsView: View {
                         if !model.configSaveStatus.isEmpty {
                             Text(model.configSaveStatus)
                                 .font(.caption)
-                                .foregroundStyle(model.configSaveStatus.hasPrefix("已保存") ? .secondary : .red)
+                                .foregroundStyle(model.configSaveStatus.hasPrefix("已保存") ? Color.secondary : Color.red)
                         }
                         Text("保存后立即对服务端所有录音生效。")
                             .font(.caption)
