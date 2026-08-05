@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,22 +22,25 @@ import (
 )
 
 type Dependencies struct {
-	Speech           provider.Speech
-	Text             provider.Text
-	SpeechForKey     func(string) provider.Speech
-	TextForKey       func(string) provider.Text
-	PrimaryLabel     string
-	CompareSpeech    provider.Speech
-	CompareLabel     string
-	CompareFile      string
-	Logger           *slog.Logger
-	MaxAudioBytes    int64
-	MaxDuration      time.Duration
-	RequestTimeout   time.Duration
-	RequestsPerMin   int
-	ASRConcurrency   int
-	TrustedProxyCIDR string
-	SessionTTL       time.Duration
+	Speech            provider.Speech
+	Text              provider.Text
+	SpeechForKey      func(string) provider.Speech
+	TextForKey        func(string) provider.Text
+	PrimaryLabel      string
+	CompareSpeech     provider.Speech
+	CompareLabel      string
+	CompareFile       string
+	PolishCompare     bool
+	PolishCompareFile string
+	TestAudioDir      string
+	Logger            *slog.Logger
+	MaxAudioBytes     int64
+	MaxDuration       time.Duration
+	RequestTimeout    time.Duration
+	RequestsPerMin    int
+	ASRConcurrency    int
+	TrustedProxyCIDR  string
+	SessionTTL        time.Duration
 }
 
 type API struct {
@@ -44,6 +49,8 @@ type API struct {
 	speechForKey   func(string) provider.Speech
 	textForKey     func(string) provider.Text
 	compare        *compareRecorder
+	polishCompare  *polishCompareRecorder
+	testAudioDir   string
 	logger         *slog.Logger
 	maxAudioBytes  int64
 	maxDuration    time.Duration
@@ -132,6 +139,8 @@ func New(deps Dependencies) http.Handler {
 		speechForKey:   deps.SpeechForKey,
 		textForKey:     deps.TextForKey,
 		compare:        nil,
+		polishCompare:  nil,
+		testAudioDir:   deps.TestAudioDir,
 		logger:         deps.Logger,
 		maxAudioBytes:  deps.MaxAudioBytes,
 		maxDuration:    deps.MaxDuration,
@@ -142,6 +151,9 @@ func New(deps Dependencies) http.Handler {
 	}
 	if deps.CompareSpeech != nil && deps.CompareFile != "" {
 		api.compare = newCompareRecorder(deps.CompareFile, deps.RequestTimeout, deps.PrimaryLabel, deps.CompareLabel, deps.CompareSpeech, deps.Text, deps.Logger)
+	}
+	if deps.PolishCompare && deps.PolishCompareFile != "" {
+		api.polishCompare = newPolishCompareRecorder(deps.PolishCompareFile, deps.Text, deps.Logger)
 	}
 	if deps.Logger != nil {
 		api.sessions.setLogger(deps.Logger.With("component", "session_store"))
@@ -289,11 +301,36 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chunked {
+		a.saveTestAudio(requestID, sessionID, chunkIndex, audio.Data)
 		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, declaredDuration, audio, speech, text, mode, started, &timings)
 		return
 	}
 
+	a.saveTestAudio(requestID, "", 0, audio.Data)
 	a.handleSingle(w, r, ctx, requestID, audio, speech, text, mode, started, &timings)
+}
+
+// saveTestAudio persists an uploaded WAV under TEST_AUDIO_DIR (test mode only)
+// so the same recording can be replayed against different provider configs
+// (e.g. Groq prompt on/off) for A/B measurements. Audio is never saved unless
+// the operator explicitly configures the directory.
+func (a *API) saveTestAudio(requestID, sessionID string, chunkIndex int, data []byte) {
+	if a.testAudioDir == "" || len(data) == 0 {
+		return
+	}
+	if err := os.MkdirAll(a.testAudioDir, 0o755); err != nil {
+		if a.logger != nil {
+			a.logger.Warn("test audio dir create failed", "dir", a.testAudioDir, "error", err)
+		}
+		return
+	}
+	if sessionID == "" {
+		sessionID = "single"
+	}
+	name := fmt.Sprintf("%s-%s-%s-chunk%d.wav", time.Now().Format("20060102T150405"), requestID, sessionID, chunkIndex)
+	if err := os.WriteFile(filepath.Join(a.testAudioDir, name), data, 0o644); err != nil && a.logger != nil {
+		a.logger.Warn("test audio save failed", "name", name, "error", err)
+	}
 }
 
 func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID string, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
@@ -348,6 +385,7 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 	finalText, err := text.Polish(ctx, rawText)
 	timings.polish = time.Since(polishStarted)
 	if err != nil {
+		a.polishCompare.run("", 1, []string{rawText}, "")
 		response := dictationResponse{
 			RequestID: requestID,
 			RawText:   rawText,
@@ -362,6 +400,7 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 		return
 	}
 
+	a.polishCompare.run("", 1, []string{rawText}, finalText)
 	a.writeTimingHeader(w, timings)
 	writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: finalText})
 	a.log(requestID, "", 0, started, *timings, "ok", nil)
@@ -605,6 +644,7 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 	timings.mergeDedupe = timings.polish
 
 	if err != nil {
+		a.polishCompare.run(sessionID, chunkTotal, chunks, "")
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{
 			RequestID:  requestID,
@@ -621,6 +661,7 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 		return
 	}
 
+	a.polishCompare.run(sessionID, chunkTotal, chunks, finalText)
 	a.writeTimingHeader(w, timings)
 	writeJSON(w, http.StatusOK, dictationResponse{
 		RequestID:  requestID,

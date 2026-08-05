@@ -32,3 +32,22 @@ type Text interface {
 	// one chunk; single-chunk recordings go through Polish.
 	PolishChunks(ctx context.Context, chunks []string) (string, error)
 }
+
+// PolishVariant selects which prompt a Text provider renders in the opt-in
+// POLISH_COMPARE test mode. The variants are intentionally provider-agnostic
+// labels: classic is the pre-redesign prompt plus the term table, v2 is the
+// capability-driven prompt, with/without the term table appended.
+type PolishVariant int
+
+const (
+	PolishClassicWithTable PolishVariant = iota
+	PolishV2WithTable
+	PolishV2Clean
+)
+
+// VariantPolish is implemented by Text providers that can render the same
+// chunks with different prompt variants. It is used only by the explicit
+// POLISH_COMPARE test mode; production code paths use Polish/PolishChunks.
+type VariantPolish interface {
+	PolishVariant(ctx context.Context, chunks []string, variant PolishVariant) (string, error)
+}

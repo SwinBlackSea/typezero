@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"typezero/internal/hotwords"
 	"typezero/internal/provider"
 )
 
@@ -26,20 +25,20 @@ type Client struct {
 	apiKey     string
 	model      string
 	prompt     string
-	hotwords   *hotwords.Store
 }
 
 // New creates a Groq transcription client. url is the base API URL, e.g.
 // https://api.groq.com/openai/v1. No language hint is sent, so Whisper
 // auto-detects the audio language per chunk; that is what keeps Chinese and
 // mixed Chinese/English speech from being forced into one fixed language
-// (GROQ_LANGUAGE=zh was measured to garble English-only audio). prompt
-// (context / spelling guidance) improves accuracy for domain terms like model
-// and product names. hotwords is an optional reloadable term table whose
-// contents are appended to the prompt on every request, so editing
-// hotwords.txt takes effect without restarting.
-func New(httpClient *http.Client, url, apiKey, model, prompt string, hotwords *hotwords.Store) *Client {
-	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, prompt: prompt, hotwords: hotwords}
+// (GROQ_LANGUAGE=zh was measured to garble English-only audio). prompt is an
+// optional, fixed context string (e.g. a short list of domain terms). It is
+// intentionally NOT fed the dynamic hotword table: Whisper's prompt is capped
+// at 224 tokens and only the trailing tokens survive, so a growing table would
+// silently evict the meaningful part of the prompt. Term correction belongs in
+// the LLM polish stage, which can execute rules; Whisper can only be biased.
+func New(httpClient *http.Client, url, apiKey, model, prompt string) *Client {
+	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, prompt: prompt}
 }
 
 type transcriptionResponse struct {
@@ -104,17 +103,8 @@ func (c *Client) buildBody(audio provider.Audio) ([]byte, string, error) {
 	if err := writer.WriteField("model", c.model); err != nil {
 		return nil, "", fmt.Errorf("write groq model field: %w", err)
 	}
-	prompt := c.prompt
-	if c.hotwords != nil {
-		if fragment := hotwords.BuildPrompt(c.hotwords.Terms(), 1200); fragment != "" {
-			if prompt != "" {
-				prompt += "\n"
-			}
-			prompt += fragment
-		}
-	}
-	if prompt != "" {
-		if err := writer.WriteField("prompt", prompt); err != nil {
+	if c.prompt != "" {
+		if err := writer.WriteField("prompt", c.prompt); err != nil {
 			return nil, "", fmt.Errorf("write groq prompt field: %w", err)
 		}
 	}

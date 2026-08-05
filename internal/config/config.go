@@ -40,8 +40,12 @@ type Config struct {
 	GroqURL           string
 	GroqPrompt        string
 	HotwordsFile      string
+	HotwordGuidance   bool
 	ASRCompare        bool
 	ASRCompareFile    string
+	PolishCompare     bool
+	PolishCompareFile string
+	TestAudioDir      string
 }
 
 func FromEnv() (Config, error) {
@@ -74,8 +78,15 @@ func FromEnv() (Config, error) {
 		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
 		GroqPrompt:       strings.TrimSpace(envOr("GROQ_PROMPT", "")),
 		HotwordsFile:     envOr("HOTWORDS_FILE", "hotwords.txt"),
-		ASRCompare:       envBool("ASR_COMPARE"),
-		ASRCompareFile:   envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),
+		// The capability-driven polish prompt works without the term table;
+		// HOTWORD_GUIDANCE keeps the table appended for comparison runs and
+		// for product-specific vocabulary the model cannot know.
+		HotwordGuidance:   envBoolDefault("HOTWORD_GUIDANCE", true),
+		ASRCompare:        envBool("ASR_COMPARE"),
+		ASRCompareFile:    envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),
+		PolishCompare:     envBool("POLISH_COMPARE"),
+		PolishCompareFile: envOr("POLISH_COMPARE_FILE", "/tmp/polish_compare.jsonl"),
+		TestAudioDir:      strings.TrimSpace(os.Getenv("TEST_AUDIO_DIR")),
 	}
 
 	if cfg.QwenAPIKey == "" {
@@ -160,6 +171,14 @@ func envOr(key, fallback string) string {
 
 func envBool(key string) bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func envBoolDefault(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 

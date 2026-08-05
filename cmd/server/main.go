@@ -37,9 +37,10 @@ func main() {
 		// Groq Whisper runs at roughly real-time or faster and is not subject
 		// to DashScope's queueing; it is the preferred ASR when configured.
 		// Clients that pass their own DashScope key still use Qwen.
-		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt, hotwordStore)
+		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt)
 	}
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, hotwordStore)
+	text.SetHotwordGuidance(cfg.HotwordGuidance)
 	primaryLabel := cfg.SpeechProvider
 	var compareSpeech provider.Speech
 	compareLabel := ""
@@ -48,7 +49,7 @@ func main() {
 			compareSpeech = qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 			compareLabel = "qwen"
 		} else if cfg.GroqAPIKey != "" {
-			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt, hotwordStore)
+			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt)
 			compareLabel = "groq"
 		}
 	}
@@ -59,20 +60,23 @@ func main() {
 			return qwen.New(httpClient, cfg.QwenURL, apiKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 		},
 		TextForKey: func(apiKey string) provider.Text {
-			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel, hotwordStore)
+			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel, hotwordStore).SetHotwordGuidance(cfg.HotwordGuidance)
 		},
-		PrimaryLabel:     primaryLabel,
-		CompareSpeech:    compareSpeech,
-		CompareLabel:     compareLabel,
-		CompareFile:      cfg.ASRCompareFile,
-		Logger:           logger,
-		MaxAudioBytes:    cfg.MaxAudioBytes,
-		MaxDuration:      cfg.MaxAudioDuration,
-		RequestTimeout:   cfg.RequestTimeout,
-		RequestsPerMin:   cfg.RequestsPerMinute,
-		ASRConcurrency:   cfg.ASRConcurrency,
-		TrustedProxyCIDR: cfg.TrustedProxyCIDR,
-		SessionTTL:       cfg.SessionTTL,
+		PrimaryLabel:      primaryLabel,
+		CompareSpeech:     compareSpeech,
+		CompareLabel:      compareLabel,
+		CompareFile:       cfg.ASRCompareFile,
+		PolishCompare:     cfg.PolishCompare,
+		PolishCompareFile: cfg.PolishCompareFile,
+		TestAudioDir:      cfg.TestAudioDir,
+		Logger:            logger,
+		MaxAudioBytes:     cfg.MaxAudioBytes,
+		MaxDuration:       cfg.MaxAudioDuration,
+		RequestTimeout:    cfg.RequestTimeout,
+		RequestsPerMin:    cfg.RequestsPerMinute,
+		ASRConcurrency:    cfg.ASRConcurrency,
+		TrustedProxyCIDR:  cfg.TrustedProxyCIDR,
+		SessionTTL:        cfg.SessionTTL,
 	})
 
 	server := &http.Server{
