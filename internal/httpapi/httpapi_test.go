@@ -840,3 +840,42 @@ func TestDictationNoSpeechSkipsPolish(t *testing.T) {
 		t.Fatalf("polish invoked on silent input")
 	}
 }
+
+// Regression: a final chunk whose index was already stored as a non-final
+// chunk means the client re-chunked a stale read and would silently drop the
+// tail. The server must reject it instead of finalizing with missing audio.
+func TestDictationRejectsFinalChunkWithStoredIndex(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"a", "b"}}
+	text := &textStub{chunks: []string{"merged"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-duplicate-final"
+	nonFinal := uploadChunk(t, handler, sessionID, 0, 0, false, testWAV(time.Second), "1000")
+	if nonFinal.statusCode != http.StatusOK {
+		t.Fatalf("non-final status = %d, body = %s", nonFinal.statusCode, nonFinal.body)
+	}
+	final := uploadChunk(t, handler, sessionID, 0, 1, true, testWAV(time.Second), "1000")
+	if final.statusCode != http.StatusConflict {
+		t.Fatalf("final status = %d, want 409, body = %s", final.statusCode, final.body)
+	}
+}
+
+// Regression: a final chunk declaring a total below the already-received
+// indices is contradictory and must be rejected.
+func TestDictationRejectsFinalTotalBelowReceivedIndex(t *testing.T) {
+	speech := &recordingSpeech{results: []string{"a", "b"}}
+	text := &textStub{chunks: []string{"merged"}}
+	handler := testHandler(speech, text)
+
+	const sessionID = "sess-small-total"
+	// Chunk 1 arrives first (parallel uploads can reorder); the final chunk 0
+	// then declares a total that cannot cover the already-received index.
+	first := uploadChunk(t, handler, sessionID, 1, 2, false, testWAV(time.Second), "1000")
+	if first.statusCode != http.StatusOK {
+		t.Fatalf("non-final status = %d, body = %s", first.statusCode, first.body)
+	}
+	final := uploadChunk(t, handler, sessionID, 0, 1, true, testWAV(time.Second), "1000")
+	if final.statusCode != http.StatusConflict {
+		t.Fatalf("final status = %d, want 409, body = %s", final.statusCode, final.body)
+	}
+}

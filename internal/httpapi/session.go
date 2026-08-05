@@ -153,6 +153,36 @@ func (s *sessionState) knownTotal() int {
 	return s.expectedTotal
 }
 
+// isFinalized reports whether the session's final chunk has already arrived.
+func (s *sessionState) isFinalized() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.finalized
+}
+
+// hasChunk reports whether a transcript for the given chunk index has already
+// been stored.
+func (s *sessionState) hasChunk(index int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.received[index]
+	return ok
+}
+
+// maxReceivedIndex returns the largest stored chunk index, or -1 when the
+// session has no chunks yet.
+func (s *sessionState) maxReceivedIndex() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	maxIndex := -1
+	for index := range s.received {
+		if index > maxIndex {
+			maxIndex = index
+		}
+	}
+	return maxIndex
+}
+
 // snapshot returns transcripts ordered by chunk index. Caller must not mutate
 // the returned slice.
 func (s *sessionState) snapshot() []string {

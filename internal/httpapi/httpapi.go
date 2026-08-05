@@ -376,6 +376,27 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 		return
 	}
 
+	if isLast {
+		// Consistency guard for the final chunk: it must be a brand-new
+		// index (a chunk already stored as non-final can only reappear if
+		// the client re-chunked a stale read and dropped the tail), and its
+		// declared total must cover every chunk already received. This turns
+		// silent tail loss into a clear, retryable error instead of letting
+		// the session finalize with missing audio.
+		if !state.isFinalized() && state.hasChunk(chunkIndex) {
+			a.writeTimingHeader(w, timings)
+			a.fail(w, http.StatusConflict, "duplicate_final_chunk", "该段已作为非末段接收，不能作为末段重传")
+			a.log(requestID, sessionID, chunkTotal, started, *timings, "duplicate_final_chunk", nil)
+			return
+		}
+		if maxIndex := state.maxReceivedIndex(); maxIndex >= 0 && maxIndex+1 > chunkTotal {
+			a.writeTimingHeader(w, timings)
+			a.fail(w, http.StatusConflict, "invalid_chunk_total", "总段数小于已接收的段号")
+			a.log(requestID, sessionID, chunkTotal, started, *timings, "invalid_chunk_total", nil)
+			return
+		}
+	}
+
 	if asrErr := a.acquireASR(ctx); asrErr != nil {
 		// Slot wait failed (request deadline or client disconnect). Keep the
 		// session: chunks already transcribed stay usable and the client can

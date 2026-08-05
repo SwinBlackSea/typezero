@@ -71,3 +71,69 @@ func testWAV(duration time.Duration) []byte {
 	output.Write(make([]byte, dataSize))
 	return output.Bytes()
 }
+
+// wavWithChunks builds a canonical WAV with optional extra RIFF chunks
+// (JUNK/LIST/etc.) inserted between WAVE and fmt.
+func wavWithChunks(auxChunks ...[]byte) []byte {
+	const byteRate = 32000
+	dataSize := uint32(3 * byteRate) // 3 seconds
+	var output bytes.Buffer
+	output.WriteString("RIFF")
+	totalSize := uint32(4) // "WAVE"
+	for _, chunk := range auxChunks {
+		totalSize += uint32(len(chunk))
+	}
+	totalSize += 8 + 16 + 8 + dataSize // fmt header+body, data header+payload
+	_ = binary.Write(&output, binary.LittleEndian, totalSize)
+	output.WriteString("WAVE")
+	for _, chunk := range auxChunks {
+		output.Write(chunk)
+	}
+	output.WriteString("fmt ")
+	_ = binary.Write(&output, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&output, binary.LittleEndian, uint16(1))
+	_ = binary.Write(&output, binary.LittleEndian, uint16(1))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(16000))
+	_ = binary.Write(&output, binary.LittleEndian, uint32(byteRate))
+	_ = binary.Write(&output, binary.LittleEndian, uint16(2))
+	_ = binary.Write(&output, binary.LittleEndian, uint16(16))
+	output.WriteString("data")
+	_ = binary.Write(&output, binary.LittleEndian, dataSize)
+	output.Write(make([]byte, dataSize))
+	return output.Bytes()
+}
+
+// junkChunk returns a JUNK chunk whose header declares declaredSize bytes
+// while only payloadBytes are actually present (the overshoot simulates a
+// stale/torn size field read while the recorder was finalizing the file).
+func junkChunk(declaredSize, payloadBytes uint32) []byte {
+	out := make([]byte, 8+payloadBytes)
+	copy(out, "JUNK")
+	binary.LittleEndian.PutUint32(out[4:8], declaredSize)
+	return out
+}
+
+func TestInspectWAVWithJUNK(t *testing.T) {
+	data := wavWithChunks(junkChunk(28, 28))
+	info, err := Inspect(data, "recording.wav")
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if info.Duration != 3*time.Second {
+		t.Fatalf("Duration = %s", info.Duration)
+	}
+}
+
+func TestInspectWAVWithTornJUNK(t *testing.T) {
+	// A JUNK chunk declaring a size that overshoots the file used to make
+	// wavDuration reject the whole file; the scan fallback must recover
+	// fmt + data and still derive the duration.
+	data := wavWithChunks(junkChunk(0xFFFFF000, 28))
+	info, err := Inspect(data, "recording.wav")
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if info.Duration != 3*time.Second {
+		t.Fatalf("Duration = %s", info.Duration)
+	}
+}

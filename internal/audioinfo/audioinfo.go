@@ -116,12 +116,17 @@ func findBox(data []byte, wanted string) ([]byte, bool) {
 func wavDuration(data []byte) (time.Duration, error) {
 	var byteRate uint32
 	var dataBytes uint32
+	foundData := false
 	for offset := 12; offset+8 <= len(data); {
 		chunkSize := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
 		start := offset + 8
 		end := start + int(chunkSize)
+		// A stale/torn auxiliary chunk size (JUNK/LIST/FLLR) can overshoot
+		// EOF while the recorder is finalizing the file. Stop walking instead
+		// of rejecting the whole file; a fallback scan below recovers the
+		// data chunk if it was skipped.
 		if end > len(data) {
-			return 0, ErrInvalid
+			break
 		}
 		switch string(data[offset : offset+4]) {
 		case "fmt ":
@@ -131,11 +136,48 @@ func wavDuration(data []byte) (time.Duration, error) {
 			byteRate = binary.LittleEndian.Uint32(data[start+8 : start+12])
 		case "data":
 			dataBytes = chunkSize
+			foundData = true
 		}
 		offset = end + int(chunkSize%2)
 	}
-	if byteRate == 0 || dataBytes == 0 {
+	if !foundData || byteRate == 0 {
+		// The walk may have been derailed by a large/torn auxiliary chunk
+		// before reaching fmt and/or data. Recover both from a scan: the
+		// real fmt and data tags always precede the PCM payload, so the
+		// first occurrences in the file are authoritative.
+		if br, size, ok := scanWAVInfo(data); ok {
+			if byteRate == 0 {
+				byteRate = br
+			}
+			if !foundData {
+				dataBytes = size
+				foundData = true
+			}
+		}
+	}
+	if byteRate == 0 || !foundData || dataBytes == 0 {
 		return 0, fmt.Errorf("%w: WAV metadata is missing", ErrInvalid)
 	}
 	return time.Duration(float64(dataBytes) / float64(byteRate) * float64(time.Second)), nil
+}
+
+// scanWAVInfo returns the byte rate and data size from the first "fmt " and
+// "data" chunks found anywhere in the file. The real chunks always precede
+// the PCM bytes, so the first occurrences are authoritative. Returns ok=false
+// when either chunk is missing or truncated.
+func scanWAVInfo(data []byte) (byteRate, dataSize uint32, ok bool) {
+	for offset := 12; offset+8 <= len(data); offset++ {
+		switch string(data[offset : offset+4]) {
+		case "fmt ":
+			if offset+20 <= len(data) {
+				byteRate = binary.LittleEndian.Uint32(data[offset+16 : offset+20])
+			}
+		case "data":
+			dataSize = binary.LittleEndian.Uint32(data[offset+4 : offset+8])
+			if byteRate > 0 {
+				return byteRate, dataSize, true
+			}
+		}
+	}
+	return 0, 0, false
 }
