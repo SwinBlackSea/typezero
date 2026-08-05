@@ -20,6 +20,7 @@ struct SettingsView: View {
                             .font(.subheadline)
                         TextField("http://127.0.0.1:8080", text: $model.serverURLText)
                             .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
                         Text("开发阶段可使用 HTTP；正式发布时请使用 HTTPS。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
