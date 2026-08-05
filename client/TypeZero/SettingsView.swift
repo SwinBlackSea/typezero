@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -67,7 +68,7 @@ struct SettingsView: View {
                         if !model.configSaveStatus.isEmpty {
                             Text(model.configSaveStatus)
                                 .font(.caption)
-                                .foregroundStyle(model.configSaveStatus.hasPrefix("已保存") ? Color.secondary : Color.red)
+                                .foregroundColor(configSaveStatusColor)
                         }
                         Text("保存后立即对服务端所有录音生效。")
                             .font(.caption)
@@ -166,6 +167,12 @@ private struct SettingsSection<Content: View>: View {
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+    }
+}
+
+private extension SettingsView {
+    var configSaveStatusColor: Color {
+        model.configSaveStatus.hasPrefix("已保存") ? Color.secondary : Color.red
     }
 }
 
