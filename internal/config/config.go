@@ -37,6 +37,7 @@ type Config struct {
 	GroqAPIKey        string
 	GroqModel         string
 	GroqURL           string
+	ConfigFile        string
 	// ChunkSeconds is the global chunking interval applied to every
 	// recording: 0 disables chunking (whole file, single ASR call), N cuts
 	// every N seconds with a fixed 2s overlap (window = N+2s). The value is
@@ -75,6 +76,7 @@ func FromEnv() (Config, error) {
 		GroqAPIKey:       strings.TrimSpace(os.Getenv("GROQ_API_KEY")),
 		GroqModel:        envOr("GROQ_MODEL", "whisper-large-v3"),
 		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
+		ConfigFile:       envOr("CONFIG_FILE", "server-config.json"),
 		ChunkSeconds:     30,
 		ASRCompare:        envBool("ASR_COMPARE"),
 		ASRCompareFile:    envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),

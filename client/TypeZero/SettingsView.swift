@@ -26,6 +26,56 @@ struct SettingsView: View {
                     }
                 }
 
+                SettingsSection("识别与切割（服务端全局）") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 16) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("识别引擎")
+                                    .font(.subheadline)
+                                Text("Qwen 走国内专线、中文更稳；Groq 更快。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 12)
+                            Picker("识别引擎", selection: $model.serverEngine) {
+                                ForEach(ServerEngineChoice.allCases) { choice in
+                                    Text(choice.title).tag(choice)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 200)
+                        }
+                        Divider()
+                        HStack(spacing: 16) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("切割间隔")
+                                    .font(.subheadline)
+                                Text("0 = 整段直传（限 3 分钟）；N = 每 N 秒切一段（2 秒重叠）。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 12)
+                            Picker("切割间隔", selection: $model.chunkSecondsSetting) {
+                                ForEach([0, 10, 20, 30, 60], id: \.self) { seconds in
+                                    Text(seconds == 0 ? "不切割" : "\(seconds) 秒").tag(seconds)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 200)
+                        }
+                        if !model.configSaveStatus.isEmpty {
+                            Text(model.configSaveStatus)
+                                .font(.caption)
+                                .foregroundStyle(model.configSaveStatus.hasPrefix("已保存") ? .secondary : .red)
+                        }
+                        Text("保存后立即对服务端所有录音生效。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 SettingsSection("快捷键") {
                     HStack(spacing: 16) {
                         VStack(alignment: .leading, spacing: 3) {

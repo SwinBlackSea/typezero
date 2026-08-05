@@ -19,6 +19,7 @@ import (
 
 	"typezero/internal/audioinfo"
 	"typezero/internal/provider"
+	"typezero/internal/serverconfig"
 )
 
 type Dependencies struct {
@@ -26,6 +27,14 @@ type Dependencies struct {
 	Text              provider.Text
 	SpeechForKey      func(string) provider.Speech
 	TextForKey        func(string) provider.Text
+	// SpeechForProvider builds the ASR engine selected by the server-global
+	// runtime config. dashScopeKey is the caller's own DashScope key when
+	// provided; it is only used for the qwen engine. Return
+	// ErrGroqNotConfigured when the server has no Groq key.
+	SpeechForProvider func(providerName, dashScopeKey string) (provider.Speech, error)
+	// RuntimeConfig is the server-global config edited by the client through
+	// /config. When nil, the API falls back to the static env-default Speech.
+	RuntimeConfig  *serverconfig.Store
 	PrimaryLabel      string
 	CompareSpeech     provider.Speech
 	CompareLabel      string
@@ -47,7 +56,12 @@ type API struct {
 	text           provider.Text
 	speechForKey   func(string) provider.Speech
 	textForKey     func(string) provider.Text
+	speechForProvider func(providerName, dashScopeKey string) (provider.Speech, error)
+	runtime        *serverconfig.Store
 	compare        *compareRecorder
+	compareFile    string
+	compareSpeech  provider.Speech
+	compareLabel   string
 	chunkSeconds   int
 	testAudioDir   string
 	logger         *slog.Logger
@@ -137,7 +151,12 @@ func New(deps Dependencies) http.Handler {
 		text:           deps.Text,
 		speechForKey:   deps.SpeechForKey,
 		textForKey:     deps.TextForKey,
+		speechForProvider: deps.SpeechForProvider,
+		runtime:        deps.RuntimeConfig,
 		compare:        nil,
+		compareFile:    deps.CompareFile,
+		compareSpeech:  deps.CompareSpeech,
+		compareLabel:   deps.CompareLabel,
 		chunkSeconds:   deps.ChunkSeconds,
 		testAudioDir:   deps.TestAudioDir,
 		logger:         deps.Logger,
@@ -148,7 +167,9 @@ func New(deps Dependencies) http.Handler {
 		asrSem:         make(chan struct{}, deps.ASRConcurrency),
 		sessions:       newSessionStore(deps.SessionTTL),
 	}
-	if deps.CompareSpeech != nil && deps.CompareFile != "" {
+	if deps.RuntimeConfig != nil {
+		api.rebuildCompare()
+	} else if deps.CompareSpeech != nil && deps.CompareFile != "" {
 		api.compare = newCompareRecorder(deps.CompareFile, deps.RequestTimeout, deps.PrimaryLabel, deps.CompareLabel, deps.CompareSpeech, deps.Text, deps.Logger)
 	}
 	if deps.Logger != nil {
@@ -165,14 +186,20 @@ func New(deps Dependencies) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
+	mux.HandleFunc("GET /config", api.getConfig)
+	mux.HandleFunc("POST /config", api.updateConfig)
 	mux.HandleFunc("POST /v1/dictations", api.dictations)
 	return securityHeaders(mux)
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
+	chunkSeconds := a.chunkSeconds
+	if a.runtime != nil {
+		chunkSeconds = a.runtime.Get().ChunkSeconds
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":        "ok",
-		"chunk_seconds": a.chunkSeconds,
+		"chunk_seconds": chunkSeconds,
 	})
 }
 
@@ -281,9 +308,15 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 	speech, text, err := a.providersForRequest(r)
 	if err != nil {
 		timings.intake = time.Since(intakeStarted)
+		code := "invalid_api_key"
+		message := "模型 API Key 格式无效"
+		if errors.Is(err, ErrGroqNotConfigured) {
+			code = "groq_not_configured"
+			message = "服务端未配置 Groq API Key，请检查服务端配置"
+		}
 		a.writeTimingHeader(w, &timings)
-		a.fail(w, http.StatusBadRequest, "invalid_api_key", "模型 API Key 格式无效")
-		a.log(requestID, "", 0, started, timings, "invalid_api_key", nil)
+		a.fail(w, http.StatusBadRequest, code, message)
+		a.log(requestID, "", 0, started, timings, code, nil)
 		return
 	}
 	timings.intake = time.Since(intakeStarted)
@@ -775,6 +808,10 @@ func (a *API) parseChunkFields(r *http.Request) (sessionID string, chunkIndex, c
 	return sessionID, idx, total, isLast, true, nil
 }
 
+// ErrGroqNotConfigured is returned by SpeechForProvider when the server has
+// no GROQ_API_KEY configured and groq is selected.
+var ErrGroqNotConfigured = errors.New("groq not configured")
+
 func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Text, error) {
 	const maxKeyLength = 512
 	speech := a.speech
@@ -784,13 +821,87 @@ func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Te
 	if len(qwenKey) > maxKeyLength || len(deepSeekKey) > maxKeyLength {
 		return nil, nil, errors.New("API key exceeds maximum length")
 	}
-	if qwenKey != "" && a.speechForKey != nil {
-		speech = a.speechForKey(qwenKey)
-	}
 	if deepSeekKey != "" && a.textForKey != nil {
 		text = a.textForKey(deepSeekKey)
 	}
+	if a.runtime != nil {
+		// The server-global engine always wins; the caller's own DashScope
+		// key (if any) only supplies the key for the qwen engine.
+		name := a.runtime.Get().SpeechProvider
+		key := ""
+		if name == "qwen" {
+			key = qwenKey
+		}
+		if a.speechForProvider == nil {
+			return nil, nil, errors.New("speech provider factory not configured")
+		}
+		selected, err := a.speechForProvider(name, key)
+		if err != nil {
+			return nil, nil, err
+		}
+		return selected, text, nil
+	}
+	if qwenKey != "" && a.speechForKey != nil {
+		speech = a.speechForKey(qwenKey)
+	}
 	return speech, text, nil
+}
+
+func (a *API) getConfig(w http.ResponseWriter, r *http.Request) {
+	if a.runtime == nil {
+		a.fail(w, http.StatusNotFound, "config_disabled", "服务端未启用运行时配置")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.runtime.Get())
+}
+
+func (a *API) updateConfig(w http.ResponseWriter, r *http.Request) {
+	if a.runtime == nil {
+		a.fail(w, http.StatusNotFound, "config_disabled", "服务端未启用运行时配置")
+		return
+	}
+	var patch struct {
+		SpeechProvider *string `json:"speech_provider"`
+		ChunkSeconds   *int    `json:"chunk_seconds"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&patch); err != nil {
+		a.fail(w, http.StatusBadRequest, "invalid_config", "配置 JSON 格式无效")
+		return
+	}
+	if patch.SpeechProvider != nil && *patch.SpeechProvider == "groq" && a.speechForProvider != nil {
+		if _, err := a.speechForProvider("groq", ""); errors.Is(err, ErrGroqNotConfigured) {
+			a.fail(w, http.StatusBadRequest, "groq_not_configured", "服务端未配置 Groq API Key，无法切换到 Groq")
+			return
+		}
+	}
+	cfg, err := a.runtime.Update(patch.SpeechProvider, patch.ChunkSeconds)
+	if err != nil {
+		a.fail(w, http.StatusBadRequest, "invalid_config", err.Error())
+		return
+	}
+	a.rebuildCompare()
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// rebuildCompare recreates the ASR comparison pair to match the current
+// server-global engine: primary = runtime engine, compare = the other one.
+// A missing provider key disables comparison rather than mislabeling it.
+func (a *API) rebuildCompare() {
+	if a.runtime == nil || a.compareFile == "" || a.speechForProvider == nil {
+		a.compare = nil
+		return
+	}
+	name := a.runtime.Get().SpeechProvider
+	other := "qwen"
+	if name == "qwen" {
+		other = "groq"
+	}
+	compareSpeech, err := a.speechForProvider(other, "")
+	if err != nil {
+		a.compare = nil
+		return
+	}
+	a.compare = newCompareRecorder(a.compareFile, a.requestTimeout, name, other, compareSpeech, a.text, a.logger)
 }
 
 type clientError struct {

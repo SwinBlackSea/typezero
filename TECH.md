@@ -40,7 +40,7 @@ macOS 客户端
 - 技术栈：Go，无状态 HTTP 单进程服务。
 - 核心接口：`POST /v1/dictations`，接收音频和输出模式，返回 `raw_text`、`final_text` 及错误信息。
 - 语音识别：`SPEECH_PROVIDER` 可选 `qwen`（DashScope）或 `groq`（Groq Whisper），默认 `qwen`。实测 Groq `whisper-large-v3` 为实时数倍速（10s 音频约 0.4s、30s 约 1.0s、60s 约 1.2s），且不受 DashScope 账号排队影响，为当前首选；Qwen 作为国内可用性的备用。客户端限制单次录音不超过 5 分钟、10 MiB。
-- 切割配置：`CHUNK_SECONDS`（默认 30，范围 0–120）。`0` = 不切割，整段直传（Qwen-ASR 单次上限 3 分钟，超出会被服务端明确拒绝）；`N` = 每 N 秒切一段、2 秒重叠、窗口 N+2 秒（第一段即 N+2 秒）。该配置对所有录音生效；`/healthz` 返回 `chunk_seconds`，客户端录音前拉取并按此切割，不随请求上传切割配置。识别引擎同样由 `SPEECH_PROVIDER` 全局决定，客户端不选择、不上传。
+- 切割配置：`CHUNK_SECONDS`（默认 30，范围 0–120）。`0` = 不切割，整段直传（Qwen-ASR 单次上限 3 分钟，超出会被服务端明确拒绝）；`N` = 每 N 秒切一段、2 秒重叠、窗口 N+2 秒（第一段即 N+2 秒）。识别引擎与切割间隔都是服务端全局配置：`SPEECH_PROVIDER` / `CHUNK_SECONDS` 是环境默认值，客户端设置页可经 `/config` 直接修改并持久化到 `server-config.json`（该文件存在时优先于环境变量），对所有录音生效。客户端录音前从 `/healthz` 拉取 `chunk_seconds` 按此切割，不随请求上传任何配置。
 - 文字处理：开发期默认 `deepseek-v4-flash` 并关闭思考模式，负责纠错、去除口头语和重复、补充标点、分段及轻度润色，必须保持原意。原文有明确多事项、步骤或待办信号时使用 `1. 2. 3.` 编号；普通聊天和单一陈述不强行列表化，也不凭空添加标题或事项。
 - 提示词策略：不维护热词表，也不向 ASR/润色注入产品专有提示词。Groq 与 Qwen 都不传 `prompt`/固定语言（逐段自动检测），DeepSeek 使用纯通用编辑提示词，靠模型常识与上下文纠错，避免热词表越维护越大的问题。
 - 模型抽象：定义 `SpeechProvider` 和 `TextProvider`，以后可替换为 OpenAI Transcribe、Groq Whisper、本地 WhisperKit或其他模型。
@@ -53,6 +53,11 @@ macOS 客户端
 - `audio`：必填，WAV 文件；当前默认 Qwen3-ASR-Flash 仅接受此格式，以避免模型对 M4A/MP4 容器的静默误识别。
 - `duration_ms`：必填，客户端测得的正整数毫秒数；服务端同时解析音频本身的时长。
 - `output_mode`：可选，`polished`（默认）或 `raw`；`raw` 跳过文字润色。
+
+配置接口（客户端设置页调用，修改后对全部录音生效）：
+
+- `GET /config`：返回当前生效配置 `{"speech_provider":"qwen","chunk_seconds":30}`。
+- `POST /config`：`application/json`，字段均可选：`speech_provider`（`qwen`/`groq`）、`chunk_seconds`（0–120）。校验通过后持久化到 `server-config.json` 并立即生效；非法值或服务端未配置 Groq Key 时返回 400。
 
 用户自带 Key 时，客户端分别通过 `X-TypeZero-DashScope-Key` 和 `X-TypeZero-DeepSeek-Key` 请求头传递。服务端只在当前请求中使用，不保存、不回传、不写入日志；请求头未提供时使用服务端环境变量中的 Key。
 

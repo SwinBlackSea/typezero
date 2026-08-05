@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"typezero/internal/provider"
+	"typezero/internal/serverconfig"
 )
 
 type speechStub struct {
@@ -112,6 +114,121 @@ func TestHealthReportsChunkSeconds(t *testing.T) {
 	}
 	if body.Status != "ok" || body.ChunkSeconds != 10 {
 		t.Fatalf("health = %#v", body)
+	}
+}
+
+func TestHealthUsesRuntimeChunkSeconds(t *testing.T) {
+	runtime := serverconfig.New(filepath.Join(t.TempDir(), "config.json"), serverconfig.Config{SpeechProvider: "qwen", ChunkSeconds: 10})
+	handler := New(Dependencies{
+		Speech:         speechStub{text: "x"},
+		Text:           &textStub{text: "y"},
+		RuntimeConfig:  runtime,
+		ChunkSeconds:   30,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+	})
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	var body struct {
+		ChunkSeconds int `json:"chunk_seconds"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ChunkSeconds != 10 {
+		t.Fatalf("chunk_seconds = %d, want 10 from runtime config", body.ChunkSeconds)
+	}
+}
+
+func TestConfigEndpointsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	runtime := serverconfig.New(path, serverconfig.Config{SpeechProvider: "qwen", ChunkSeconds: 30})
+	handler := New(Dependencies{
+		Speech:         speechStub{text: "x"},
+		Text:           &textStub{text: "y"},
+		RuntimeConfig:  runtime,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+	})
+
+	// GET returns the effective config.
+	getReq := httptest.NewRequest(http.MethodGet, "/config", nil)
+	getResp := httptest.NewRecorder()
+	handler.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET /config status = %d", getResp.Code)
+	}
+	var before serverconfig.Config
+	if err := json.NewDecoder(getResp.Body).Decode(&before); err != nil {
+		t.Fatal(err)
+	}
+	if before.SpeechProvider != "qwen" || before.ChunkSeconds != 30 {
+		t.Fatalf("GET /config = %#v", before)
+	}
+
+	// POST updates and persists.
+	postReq := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(`{"chunk_seconds":10}`))
+	postResp := httptest.NewRecorder()
+	handler.ServeHTTP(postResp, postReq)
+	if postResp.Code != http.StatusOK {
+		t.Fatalf("POST /config status = %d, body = %s", postResp.Code, postResp.Body.String())
+	}
+	var after serverconfig.Config
+	if err := json.NewDecoder(postResp.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after.ChunkSeconds != 10 {
+		t.Fatalf("POST /config result = %#v", after)
+	}
+
+	// Invalid values are rejected.
+	badReq := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(`{"speech_provider":"whisper"}`))
+	badResp := httptest.NewRecorder()
+	handler.ServeHTTP(badResp, badReq)
+	if badResp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid POST /config status = %d", badResp.Code)
+	}
+
+	// A new store over the same file picks up the persisted value.
+	reloaded := serverconfig.New(path, serverconfig.Config{SpeechProvider: "qwen", ChunkSeconds: 30})
+	if reloaded.Get().ChunkSeconds != 10 {
+		t.Fatalf("reloaded chunk_seconds = %d", reloaded.Get().ChunkSeconds)
+	}
+}
+
+func TestProvidersForRequestUsesRuntimeEngine(t *testing.T) {
+	runtime := serverconfig.New("", serverconfig.Config{SpeechProvider: "groq", ChunkSeconds: 30})
+	selected := ""
+	api := &API{
+		speech: speechStub{text: "default speech"},
+		text:   &textStub{text: "default text"},
+		runtime: runtime,
+		speechForProvider: func(name, key string) (provider.Speech, error) {
+			selected = name
+			return speechStub{text: "runtime speech"}, nil
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/dictations", nil)
+	request.Header.Set("X-TypeZero-DashScope-Key", " qwen-user-key ")
+
+	speech, _, err := api.providersForRequest(request)
+	if err != nil {
+		t.Fatalf("providersForRequest() error = %v", err)
+	}
+	if selected != "groq" {
+		t.Fatalf("selected provider = %q, want groq (client DashScope key must not override the server engine)", selected)
+	}
+	got, _ := speech.Transcribe(context.Background(), provider.Audio{})
+	if got != "runtime speech" {
+		t.Fatalf("speech = %q", got)
 	}
 }
 

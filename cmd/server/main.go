@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"typezero/internal/provider/deepseek"
 	"typezero/internal/provider/groq"
 	"typezero/internal/provider/qwen"
+	"typezero/internal/serverconfig"
 )
 
 func main() {
@@ -35,6 +37,10 @@ func main() {
 		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
 	}
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel)
+	runtimeConfig := serverconfig.New(cfg.ConfigFile, serverconfig.Config{
+		SpeechProvider: cfg.SpeechProvider,
+		ChunkSeconds:   cfg.ChunkSeconds,
+	})
 	primaryLabel := cfg.SpeechProvider
 	var compareSpeech provider.Speech
 	compareLabel := ""
@@ -56,6 +62,26 @@ func main() {
 		TextForKey: func(apiKey string) provider.Text {
 			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel)
 		},
+		// SpeechForProvider builds the ASR engine selected by the
+		// server-global runtime config; the client edits it through /config.
+		SpeechForProvider: func(name, dashScopeKey string) (provider.Speech, error) {
+			switch name {
+			case "qwen":
+				key := cfg.QwenAPIKey
+				if dashScopeKey != "" {
+					key = dashScopeKey
+				}
+				return qwen.New(httpClient, cfg.QwenURL, key, cfg.QwenModel, cfg.QwenWaitTimeout), nil
+			case "groq":
+				if cfg.GroqAPIKey == "" {
+					return nil, httpapi.ErrGroqNotConfigured
+				}
+				return groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel), nil
+			default:
+				return nil, fmt.Errorf("unsupported speech provider %q", name)
+			}
+		},
+		RuntimeConfig:     runtimeConfig,
 		PrimaryLabel:      primaryLabel,
 		CompareSpeech:     compareSpeech,
 		CompareLabel:      compareLabel,
