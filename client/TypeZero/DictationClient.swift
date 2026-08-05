@@ -104,31 +104,23 @@ struct DictationClient: Sendable {
     let endpoint: URL
     let dashscopeAPIKey: String
     let deepSeekAPIKey: String
-    /// Server-driven chunking interval in seconds (CHUNK_SECONDS): 0 means
-    /// no chunking (whole file in one shot), N cuts every N seconds with the
-    /// fixed 2s overlap (window = N + 2s). Fetched from the server's
-    /// /healthz, never chosen or sent by the client.
-    let chunkStepSeconds: Int
 
     /// Chunk-aware upload. Splits the recording into overlapping segments and
     /// fires them in parallel; the final chunk's response carries the polished
     /// text and per-chunk timing breakdown.
     func uploadChunked(recording: Recording) async throws -> DictationUploadResult {
-        // 0 disables chunking; recordings within one full window produce a
-        // single chunk with nothing to merge, so upload them as one shot.
-        // This also skips the WAV chunk parser entirely: a JUNK-block header
-        // can otherwise make the chunker report "无法切分音频" on an
-        // otherwise valid recording.
-        if chunkStepSeconds <= 0 ||
-            recording.durationMilliseconds < AudioChunker.windowMilliseconds(stepSeconds: Double(chunkStepSeconds)) {
+        // Recordings within one full 32s window produce a single chunk with
+        // nothing to merge, so upload them as one shot. This also skips the
+        // WAV chunk parser entirely: a JUNK-block header can otherwise make
+        // the chunker report "无法切分音频" on an otherwise valid recording.
+        if recording.durationMilliseconds < AudioChunker.windowMilliseconds {
             return try await upload(recording: recording)
         }
         let preparationStarted = Date()
         let (audio, chunks) = try await Self.loadAndChunkRecording(
             url: recording.url,
             durationMs: recording.durationMilliseconds,
-            mustCover: [],
-            stepSeconds: Double(chunkStepSeconds)
+            mustCover: []
         )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
@@ -232,8 +224,7 @@ struct DictationClient: Sendable {
         let (audio, chunks) = try await Self.loadAndChunkRecording(
             url: recording.url,
             durationMs: recording.durationMilliseconds,
-            mustCover: alreadyUploaded,
-            stepSeconds: Double(chunkStepSeconds)
+            mustCover: alreadyUploaded
         )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
@@ -576,17 +567,16 @@ struct DictationClient: Sendable {
     private static func loadAndChunkRecording(
         url: URL,
         durationMs: Int,
-        mustCover: Set<Int>,
-        stepSeconds: Double
+        mustCover: Set<Int>
     ) async throws -> (Data, [AudioChunker.Chunk]) {
         let expectedBytes = Self.expectedWAVBytes(durationMs: durationMs)
         var data = try await Self.readRecordingData(url: url, expectedBytes: expectedBytes)
-        var chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs, stepSeconds: stepSeconds)
+        var chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
         if !isUsableChunkSet(chunks, durationMs: durationMs, mustCover: mustCover) {
             for _ in 0..<20 {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 data = try Data(contentsOf: url)
-                chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs, stepSeconds: stepSeconds)
+                chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
                 if isUsableChunkSet(chunks, durationMs: durationMs, mustCover: mustCover) {
                     break
                 }

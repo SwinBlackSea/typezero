@@ -1,39 +1,6 @@
 import AppKit
 import Foundation
 
-/// ASR engine choice shown in Settings; saved to the server's global config.
-enum ServerEngineChoice: String, CaseIterable, Identifiable {
-    case qwen = "qwen"
-    case groq = "groq"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .qwen: return "Qwen（千问，国内专线）"
-        case .groq: return "Groq（更快）"
-        }
-    }
-}
-
-private struct ServerConfigResponse: Decodable {
-    let speechProvider: String
-    let chunkSeconds: Int
-
-    enum CodingKeys: String, CodingKey {
-        case speechProvider = "speech_provider"
-        case chunkSeconds = "chunk_seconds"
-    }
-}
-
-private struct ConfigErrorResponse: Decodable {
-    struct ErrorInfo: Decodable {
-        let code: String
-        let message: String
-    }
-    let error: ErrorInfo
-}
-
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
@@ -64,16 +31,6 @@ final class AppModel: ObservableObject {
     @Published var deepSeekAPIKey: String {
         didSet { KeychainStore.set(deepSeekAPIKey, for: "deepseek-api-key") }
     }
-    /// Server-global ASR engine. Changing it saves to the server's /config.
-    @Published var serverEngine: ServerEngineChoice = .qwen {
-        didSet { pushServerConfig() }
-    }
-    /// Server-global chunking interval in seconds (0 = no chunking).
-    /// Changing it saves to the server's /config.
-    @Published var chunkSecondsSetting: Int = 30 {
-        didSet { pushServerConfig() }
-    }
-    @Published var configSaveStatus: String = ""
 
     private static let serverURLKey = "serverURL"
     private static let shortcutKey = "shortcutChoice"
@@ -88,11 +45,6 @@ final class AppModel: ObservableObject {
     private var uploadedChunkIndexes = Set<Int>()
     private var incrementalTask: Task<Void, Never>?
     private var incrementalFailed = false
-    /// Server-driven chunking interval used for cutting. Kept in sync with
-    /// the server's /config (0 disables chunking; N = 2s overlap windows).
-    private var serverChunkSeconds = 30
-    /// Suppresses didSet pushes while hydrating from the server.
-    private var isHydratingServerConfig = true
     var onStatusChanged: ((Phase) -> Void)?
     var onAudioLevelChanged: ((CGFloat) -> Void)?
 
@@ -107,10 +59,6 @@ final class AppModel: ObservableObject {
         shortcut = ShortcutChoice(rawValue: savedShortcut ?? "") ?? .controlOptionSpace
         dashscopeAPIKey = KeychainStore.string(for: "dashscope-api-key")
         deepSeekAPIKey = KeychainStore.string(for: "deepseek-api-key")
-
-        Task { [weak self] in
-            await self?.fetchServerConfig()
-        }
 
         shortcutMonitor.choice = shortcut
         shortcutMonitor.onTrigger = { @MainActor [weak self] in
@@ -199,9 +147,6 @@ final class AppModel: ObservableObject {
         }
 
         requestSystemPermissionsOnFirstRecording()
-        Task { [weak self] in
-            await self?.fetchServerConfig()
-        }
         do {
             try await recorder.start()
             elapsedSeconds = 0
@@ -279,8 +224,7 @@ final class AppModel: ObservableObject {
                 let client = DictationClient(
                     endpoint: endpoint,
                     dashscopeAPIKey: self.dashscopeAPIKey,
-                    deepSeekAPIKey: self.deepSeekAPIKey,
-                    chunkStepSeconds: self.serverChunkSeconds
+                    deepSeekAPIKey: self.deepSeekAPIKey
                 )
                 let sessionID = (incrementalSessionID != nil && !incrementalFailed && !alreadyUploaded.isEmpty)
                     ? incrementalSessionID
@@ -346,17 +290,13 @@ final class AppModel: ObservableObject {
               let url = recorder.recordingURL,
               let audio = try? Data(contentsOf: url, options: .mappedIfSafe),
               !audio.isEmpty else { return }
-        // Chunking is a server-side global setting (CHUNK_SECONDS): 0 means
-        // no incremental upload at all — the whole file goes up at stop.
-        guard serverChunkSeconds > 0 else { return }
-        let step = Double(serverChunkSeconds)
-        let chunks = AudioChunker.chunk(wavData: audio, stepSeconds: step)
-        // Only start incrementally uploading once the first full window has
-        // been recorded. A recording that stops inside the first window is
-        // uploaded whole via the single-shot path instead of producing a
+        let chunks = AudioChunker.chunk(wavData: audio)
+        // Only start incrementally uploading once the first full 32s window
+        // has been recorded. A recording that stops inside the first window
+        // is uploaded whole via the single-shot path instead of producing a
         // near-empty tail chunk.
         guard chunks.count > 1,
-              chunks[0].chunkEndMilliseconds - chunks[0].chunkStartMilliseconds >= AudioChunker.windowMilliseconds(stepSeconds: step) else { return }
+              chunks[0].chunkEndMilliseconds - chunks[0].chunkStartMilliseconds >= AudioChunker.windowMilliseconds else { return }
         let toUpload = chunks.dropLast().filter { !uploadedChunkIndexes.contains($0.chunkIndex) }
         guard !toUpload.isEmpty else { return }
 
@@ -371,8 +311,7 @@ final class AppModel: ObservableObject {
         let client = DictationClient(
             endpoint: endpoint,
             dashscopeAPIKey: dashscopeAPIKey,
-            deepSeekAPIKey: deepSeekAPIKey,
-            chunkStepSeconds: serverChunkSeconds
+            deepSeekAPIKey: deepSeekAPIKey
         )
 
         for chunk in toUpload {
@@ -412,77 +351,6 @@ final class AppModel: ObservableObject {
         case .copied:
             setPhase(.success("无法直接插入，文字已复制"))
         }
-    }
-
-    /// Pulls the server-global config (engine + chunking) from /config.
-    /// Best-effort: on any failure the previous values (defaults qwen/30)
-    /// are kept so recording is never blocked by the fetch.
-    private func fetchServerConfig() async {
-        defer { isHydratingServerConfig = false }
-        guard let url = configEndpointURL() else { return }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              http.statusCode == 200,
-              let payload = try? JSONDecoder().decode(ServerConfigResponse.self, from: data),
-              (0...120).contains(payload.chunkSeconds),
-              payload.speechProvider == "qwen" || payload.speechProvider == "groq" else { return }
-
-        isHydratingServerConfig = true
-        serverEngine = ServerEngineChoice(rawValue: payload.speechProvider) ?? .qwen
-        chunkSecondsSetting = payload.chunkSeconds
-        serverChunkSeconds = payload.chunkSeconds
-    }
-
-    private func pushServerConfig() {
-        guard !isHydratingServerConfig else { return }
-        Task { [weak self] in
-            await self?.applyServerConfig()
-        }
-    }
-
-    /// Saves the current engine + chunking choice to the server's global
-    /// /config; it then applies to every recording through that server.
-    private func applyServerConfig() async {
-        guard let url = configEndpointURL() else {
-            configSaveStatus = "保存失败：服务地址无效"
-            return
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 5
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "speech_provider": serverEngine.rawValue,
-            "chunk_seconds": chunkSecondsSetting
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse else {
-            configSaveStatus = "保存失败：无法连接服务端"
-            return
-        }
-        if http.statusCode == 200 {
-            serverChunkSeconds = chunkSecondsSetting
-            configSaveStatus = "已保存到服务端"
-        } else {
-            let message = (try? JSONDecoder().decode(ConfigErrorResponse.self, from: data))?.error.message
-                ?? "HTTP \(http.statusCode)"
-            configSaveStatus = "保存失败：\(message)"
-        }
-    }
-
-    private func configEndpointURL() -> URL? {
-        guard var components = URLComponents(string: serverURLText.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "https" || scheme == "http",
-              components.host != nil else { return nil }
-        components.path = "/config"
-        components.query = nil
-        components.fragment = nil
-        return components.url
     }
 
     private func validatedEndpoint() throws -> URL {
