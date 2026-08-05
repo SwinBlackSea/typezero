@@ -17,12 +17,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
-    var model: AppModel!
+    private var _model: AppModel?
+    /// Lazily created so the SwiftUI Settings scene can safely reference it
+    /// even when evaluated before applicationDidFinishLaunching.
+    var model: AppModel {
+        if let _model {
+            return _model
+        }
+        let created = AppModel()
+        _model = created
+        return created
+    }
     private var imageView: NSImageView!
     private var recordingOverlay: RecordingOverlayController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        model = AppModel()
+        _ = model
         recordingOverlay = RecordingOverlayController()
 
         // Callback receives phase value directly (no @MainActor access needed)
@@ -39,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        model?.refreshShortcutMonitoring()
+        model.refreshShortcutMonitoring()
     }
 
     private func updateIcon(for phase: AppModel.Phase) {
