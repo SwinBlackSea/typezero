@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
-    private var model: AppModel!
+    var model: AppModel!
     private var imageView: NSImageView!
     private var recordingOverlay: RecordingOverlayController!
 
@@ -116,7 +116,7 @@ struct TypeZeroApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(model: appDelegate.model)
         }
     }
 }
