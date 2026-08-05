@@ -74,7 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 350, height: 340)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(
-            rootView: MenuContentView(model: model)
+            rootView: MenuContentView(model: model) { [weak self] in
+                self?.openSettings()
+            }
         )
     }
 
@@ -89,12 +91,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openSettings() {
+        // Close the menu popover first so the transient panel cannot linger
+        // behind the settings window as a transparent ghost.
+        if popover.isShown {
+            popover.performClose(nil)
+        }
         if let window = settingsWindow, window.isVisible {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = NSWindow(
+        let window = settingsWindow ?? NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
