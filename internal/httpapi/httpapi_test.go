@@ -133,11 +133,91 @@ func TestProvidersForRequestUsesEphemeralKeys(t *testing.T) {
 	request.Header.Set("X-TypeZero-DashScope-Key", " qwen-user-key ")
 	request.Header.Set("X-TypeZero-DeepSeek-Key", " deepseek-user-key ")
 
-	if _, _, err := api.providersForRequest(request); err != nil {
+	if _, _, _, err := api.providersForRequest(request); err != nil {
 		t.Fatalf("providersForRequest() error = %v", err)
 	}
 	if qwenKey != "qwen-user-key" || deepSeekKey != "deepseek-user-key" {
 		t.Fatalf("factory keys = %q, %q", qwenKey, deepSeekKey)
+	}
+}
+
+func TestProvidersForRequestSelectsRequestedEngine(t *testing.T) {
+	var selectedProvider, selectedKey string
+	api := &API{
+		speech: speechStub{text: "default speech"},
+		text:   &textStub{text: "default text"},
+		speechForProvider: func(name, key string) (provider.Speech, error) {
+			selectedProvider = name
+			selectedKey = key
+			return speechStub{text: "selected speech"}, nil
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/dictations", nil)
+	request.PostForm = map[string][]string{"asr_provider": {"groq"}}
+	request.Header.Set("X-TypeZero-DashScope-Key", " qwen-user-key ")
+
+	speech, _, requested, err := api.providersForRequest(request)
+	if err != nil {
+		t.Fatalf("providersForRequest() error = %v", err)
+	}
+	if requested != "groq" {
+		t.Fatalf("requested provider = %q, want groq", requested)
+	}
+	if selectedProvider != "groq" || selectedKey != "" {
+		t.Fatalf("selected provider/key = %q/%q, want groq/empty", selectedProvider, selectedKey)
+	}
+	got, err := speech.Transcribe(context.Background(), provider.Audio{})
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
+	}
+	if got != "selected speech" {
+		t.Fatalf("speech = %q", got)
+	}
+}
+
+func TestProvidersForRequestRejectsUnknownEngine(t *testing.T) {
+	api := &API{
+		speech:            speechStub{text: "default speech"},
+		text:              &textStub{text: "default text"},
+		speechForProvider: func(name, key string) (provider.Speech, error) { return nil, nil },
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/dictations", nil)
+	request.PostForm = map[string][]string{"asr_provider": {"whisper"}}
+
+	if _, _, _, err := api.providersForRequest(request); !errors.Is(err, errUnsupportedASRProvider) {
+		t.Fatalf("providersForRequest() error = %v, want errUnsupportedASRProvider", err)
+	}
+}
+
+func TestDictationRejectsUnconfiguredGroq(t *testing.T) {
+	handler := New(Dependencies{
+		Speech: speechStub{text: "default"},
+		Text:   &textStub{text: "final"},
+		SpeechForProvider: func(name, key string) (provider.Speech, error) {
+			return nil, ErrGroqNotConfigured
+		},
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+	})
+	request := multipartRequestWithFields(t, testWAV(time.Second), "recording.wav", "1000", "polished", map[string]string{"asr_provider": "groq"})
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Error apiError `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "groq_not_configured" {
+		t.Fatalf("error code = %q, body = %s", body.Error.Code, response.Body.String())
 	}
 }
 
@@ -151,6 +231,31 @@ func testHandler(speech provider.Speech, text provider.Text) http.Handler {
 		RequestTimeout: 5 * time.Second,
 		RequestsPerMin: 100,
 	})
+}
+
+func multipartRequestWithFields(t *testing.T, audio []byte, filename, duration, mode string, fields map[string]string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	file, err := w.CreateFormFile("audio", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(audio); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.WriteField("duration_ms", duration)
+	_ = w.WriteField("output_mode", mode)
+	for name, value := range fields {
+		_ = w.WriteField(name, value)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/dictations", &body)
+	request.Header.Set("Content-Type", w.FormDataContentType())
+	return request
 }
 
 func multipartRequest(t *testing.T, audio []byte, filename, duration, mode string) *http.Request {

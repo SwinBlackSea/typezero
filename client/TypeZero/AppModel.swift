@@ -1,6 +1,24 @@
 import AppKit
 import Foundation
 
+/// ASR engine selection persisted locally. The empty raw value means "server
+/// default" (SPEECH_PROVIDER on the backend).
+enum ASRProviderChoice: String, CaseIterable, Identifiable {
+    case auto = ""
+    case qwen = "qwen"
+    case groq = "groq"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto: return "自动（服务端默认）"
+        case .qwen: return "Qwen（千问，国内专线）"
+        case .groq: return "Groq（更快）"
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
@@ -31,9 +49,13 @@ final class AppModel: ObservableObject {
     @Published var deepSeekAPIKey: String {
         didSet { KeychainStore.set(deepSeekAPIKey, for: "deepseek-api-key") }
     }
+    @Published var asrProvider: ASRProviderChoice {
+        didSet { UserDefaults.standard.set(asrProvider.rawValue, forKey: Self.asrProviderKey) }
+    }
 
     private static let serverURLKey = "serverURL"
     private static let shortcutKey = "shortcutChoice"
+    private static let asrProviderKey = "asrProvider"
 
     private let recorder = AudioRecorder()
     private let inserter = TextInserter()
@@ -59,6 +81,8 @@ final class AppModel: ObservableObject {
         shortcut = ShortcutChoice(rawValue: savedShortcut ?? "") ?? .controlOptionSpace
         dashscopeAPIKey = KeychainStore.string(for: "dashscope-api-key")
         deepSeekAPIKey = KeychainStore.string(for: "deepseek-api-key")
+        let savedProvider = UserDefaults.standard.string(forKey: Self.asrProviderKey) ?? ""
+        asrProvider = ASRProviderChoice(rawValue: savedProvider) ?? .auto
 
         shortcutMonitor.choice = shortcut
         shortcutMonitor.onTrigger = { @MainActor [weak self] in
@@ -224,7 +248,8 @@ final class AppModel: ObservableObject {
                 let client = DictationClient(
                     endpoint: endpoint,
                     dashscopeAPIKey: self.dashscopeAPIKey,
-                    deepSeekAPIKey: self.deepSeekAPIKey
+                    deepSeekAPIKey: self.deepSeekAPIKey,
+                    asrProvider: self.asrProvider.rawValue
                 )
                 let sessionID = (incrementalSessionID != nil && !incrementalFailed && !alreadyUploaded.isEmpty)
                     ? incrementalSessionID
@@ -311,7 +336,8 @@ final class AppModel: ObservableObject {
         let client = DictationClient(
             endpoint: endpoint,
             dashscopeAPIKey: dashscopeAPIKey,
-            deepSeekAPIKey: deepSeekAPIKey
+            deepSeekAPIKey: deepSeekAPIKey,
+            asrProvider: asrProvider.rawValue
         )
 
         for chunk in toUpload {

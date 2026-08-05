@@ -23,6 +23,25 @@ struct SettingsView: View {
                         Text("开发阶段可使用 HTTP；正式发布时请使用 HTTPS。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Divider()
+                        HStack(spacing: 16) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("识别引擎")
+                                    .font(.subheadline)
+                                Text("Qwen 走国内专线、中文更稳；Groq 更快。自动使用服务端默认。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 12)
+                            Picker("识别引擎", selection: $model.asrProvider) {
+                                ForEach(ASRProviderChoice.allCases) { choice in
+                                    Text(choice.title).tag(choice)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 180)
+                        }
                     }
                 }
 

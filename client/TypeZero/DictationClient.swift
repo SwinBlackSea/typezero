@@ -104,6 +104,9 @@ struct DictationClient: Sendable {
     let endpoint: URL
     let dashscopeAPIKey: String
     let deepSeekAPIKey: String
+    /// ASR engine: "" = server default, "qwen" or "groq". Sent as
+    /// asr_provider so the user can pick the engine from settings.
+    let asrProvider: String
 
     /// Chunk-aware upload. Splits the recording into overlapping segments and
     /// fires them in parallel; the final chunk's response carries the polished
@@ -147,7 +150,8 @@ struct DictationClient: Sendable {
 
         let outcomes = try await uploadChunks(
             sessionID: sessionID,
-            chunks: chunks
+            chunks: chunks,
+            asrProvider: asrProvider
         )
 
         let requestMilliseconds = elapsedMilliseconds(since: requestStarted)
@@ -193,7 +197,8 @@ struct DictationClient: Sendable {
             chunkTotal: chunkTotal,
             isLast: false,
             dashscopeAPIKey: dashscopeAPIKey,
-            deepSeekAPIKey: deepSeekAPIKey
+            deepSeekAPIKey: deepSeekAPIKey,
+            asrProvider: asrProvider
         )
         if let errorMessage = outcome.errorMessage {
             throw ClientError.chunkUploadFailed(errorMessage)
@@ -256,6 +261,7 @@ struct DictationClient: Sendable {
                     let endpoint = endpoint
                     let dashscopeAPIKey = dashscopeAPIKey
                     let deepSeekAPIKey = deepSeekAPIKey
+                    let asrProvider = asrProvider
                     let sessionID = sessionID
                     group.addTask {
                         let outcome = try await Self.uploadOne(
@@ -265,7 +271,8 @@ struct DictationClient: Sendable {
                             chunkTotal: 0,
                             isLast: false,
                             dashscopeAPIKey: dashscopeAPIKey,
-                            deepSeekAPIKey: deepSeekAPIKey
+                            deepSeekAPIKey: deepSeekAPIKey,
+                            asrProvider: asrProvider
                         )
                         if let errorMessage = outcome.errorMessage {
                             throw ClientError.chunkUploadFailed(errorMessage)
@@ -285,7 +292,8 @@ struct DictationClient: Sendable {
             chunkTotal: chunks.count,
             isLast: true,
             dashscopeAPIKey: dashscopeAPIKey,
-            deepSeekAPIKey: deepSeekAPIKey
+            deepSeekAPIKey: deepSeekAPIKey,
+            asrProvider: asrProvider
         )
         if let errorMessage = finalOutcome.errorMessage {
             throw ClientError.chunkUploadFailed(errorMessage)
@@ -325,6 +333,9 @@ struct DictationClient: Sendable {
         var body = Data()
         body.appendField(name: "duration_ms", value: String(recording.durationMilliseconds), boundary: boundary)
         body.appendField(name: "output_mode", value: "polished", boundary: boundary)
+        if !asrProvider.isEmpty {
+            body.appendField(name: "asr_provider", value: asrProvider, boundary: boundary)
+        }
         body.appendFile(name: "audio", filename: "recording.wav", contentType: "audio/wav", data: audio, boundary: boundary)
         body.append("--\(boundary)--\r\n")
 
@@ -380,13 +391,14 @@ struct DictationClient: Sendable {
 
     private func uploadChunks(
         sessionID: String,
-        chunks: [AudioChunker.Chunk]
+        chunks: [AudioChunker.Chunk],
+        asrProvider: String
     ) async throws -> [ChunkOutcome] {
         var outcomes: [ChunkOutcome?] = Array(repeating: nil, count: chunks.count)
         try await withThrowingTaskGroup(of: (Int, ChunkOutcome).self) { group in
             for (index, chunk) in chunks.enumerated() {
                 let isLast = index == chunks.count - 1
-                group.addTask { [endpoint, dashscopeAPIKey, deepSeekAPIKey] in
+                group.addTask { [endpoint, dashscopeAPIKey, deepSeekAPIKey, asrProvider] in
                     let outcome = try await Self.uploadOne(
                         endpoint: endpoint,
                         sessionID: sessionID,
@@ -394,7 +406,8 @@ struct DictationClient: Sendable {
                         chunkTotal: chunks.count,
                         isLast: isLast,
                         dashscopeAPIKey: dashscopeAPIKey,
-                        deepSeekAPIKey: deepSeekAPIKey
+                        deepSeekAPIKey: deepSeekAPIKey,
+                        asrProvider: asrProvider
                     )
                     return (index, outcome)
                 }
@@ -416,7 +429,8 @@ struct DictationClient: Sendable {
         chunkTotal: Int,
         isLast: Bool,
         dashscopeAPIKey: String,
-        deepSeekAPIKey: String
+        deepSeekAPIKey: String,
+        asrProvider: String
     ) async throws -> ChunkOutcome {
         let boundary = "TypeZero-\(UUID().uuidString)"
         var body = Data()
@@ -427,6 +441,9 @@ struct DictationClient: Sendable {
         let chunkDurationMs = chunk.chunkEndMilliseconds - chunk.chunkStartMilliseconds
         body.appendField(name: "duration_ms", value: String(chunkDurationMs), boundary: boundary)
         body.appendField(name: "output_mode", value: "polished", boundary: boundary)
+        if !asrProvider.isEmpty {
+            body.appendField(name: "asr_provider", value: asrProvider, boundary: boundary)
+        }
         body.appendField(name: "session_id", value: sessionID, boundary: boundary)
         body.appendField(name: "chunk_index", value: String(chunk.chunkIndex), boundary: boundary)
         body.appendField(name: "chunk_total", value: String(chunkTotal), boundary: boundary)

@@ -26,6 +26,11 @@ type Dependencies struct {
 	Text              provider.Text
 	SpeechForKey      func(string) provider.Speech
 	TextForKey        func(string) provider.Text
+	// SpeechForProvider builds the ASR engine selected by the client's
+	// asr_provider field ("qwen" | "groq"). dashScopeKey is the caller's own
+	// DashScope key when provided; it is only used for the qwen engine.
+	// Return ErrGroqNotConfigured when the server has no Groq key.
+	SpeechForProvider func(providerName, dashScopeKey string) (provider.Speech, error)
 	PrimaryLabel      string
 	CompareSpeech     provider.Speech
 	CompareLabel      string
@@ -46,6 +51,7 @@ type API struct {
 	text           provider.Text
 	speechForKey   func(string) provider.Speech
 	textForKey     func(string) provider.Text
+	speechForProvider func(providerName, dashScopeKey string) (provider.Speech, error)
 	compare        *compareRecorder
 	testAudioDir   string
 	logger         *slog.Logger
@@ -135,6 +141,7 @@ func New(deps Dependencies) http.Handler {
 		text:           deps.Text,
 		speechForKey:   deps.SpeechForKey,
 		textForKey:     deps.TextForKey,
+		speechForProvider: deps.SpeechForProvider,
 		compare:        nil,
 		testAudioDir:   deps.TestAudioDir,
 		logger:         deps.Logger,
@@ -272,15 +279,30 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	speech, text, err := a.providersForRequest(r)
+	speech, text, requested, err := a.providersForRequest(r)
 	if err != nil {
 		timings.intake = time.Since(intakeStarted)
+		status := http.StatusBadRequest
+		code := "invalid_api_key"
+		message := "模型 API Key 格式无效"
+		switch {
+		case errors.Is(err, errUnsupportedASRProvider):
+			code = "invalid_asr_provider"
+			message = "asr_provider 仅支持 qwen 或 groq"
+		case errors.Is(err, ErrGroqNotConfigured):
+			code = "groq_not_configured"
+			message = "服务端未配置 Groq API Key，无法使用 Groq"
+		}
 		a.writeTimingHeader(w, &timings)
-		a.fail(w, http.StatusBadRequest, "invalid_api_key", "模型 API Key 格式无效")
-		a.log(requestID, "", 0, started, timings, "invalid_api_key", nil)
+		a.fail(w, status, code, message)
+		a.log(requestID, "", 0, started, timings, code, nil)
 		return
 	}
 	timings.intake = time.Since(intakeStarted)
+	// An explicit engine choice is a production decision, so the ASR
+	// comparison duplicate is skipped: the requested engine is the only one
+	// run. The default path (no asr_provider) keeps ASR_COMPARE behavior.
+	compareEnabled := requested == ""
 
 	// Chunked mode is triggered when the client provides session_id and
 	// chunk_index. chunk_total is also required. Anything missing falls back
@@ -295,12 +317,12 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 
 	if chunked {
 		a.saveTestAudio(requestID, sessionID, chunkIndex, audio.Data)
-		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, declaredDuration, audio, speech, text, mode, started, &timings)
+		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, declaredDuration, audio, speech, text, compareEnabled, mode, started, &timings)
 		return
 	}
 
 	a.saveTestAudio(requestID, "", 0, audio.Data)
-	a.handleSingle(w, r, ctx, requestID, audio, speech, text, mode, started, &timings)
+	a.handleSingle(w, r, ctx, requestID, audio, speech, text, compareEnabled, mode, started, &timings)
 }
 
 // saveTestAudio persists an uploaded WAV under TEST_AUDIO_DIR (test mode only)
@@ -326,7 +348,7 @@ func (a *API) saveTestAudio(requestID, sessionID string, chunkIndex int, data []
 	}
 }
 
-func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID string, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
+func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID string, audio provider.Audio, speech provider.Speech, text provider.Text, compareEnabled bool, mode string, started time.Time, timings *requestTimings) {
 	timings.asrRan = true
 	asrStarted := time.Now()
 	if err := a.acquireASR(ctx); err != nil {
@@ -351,7 +373,9 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 		}
 		rawText = ""
 	}
-	a.compareChunk("", 0, 0, audio, rawText, timings.asr)
+	if compareEnabled {
+		a.compareChunk("", 0, 0, audio, rawText, timings.asr)
+	}
 	if mode == "raw" {
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: rawText})
@@ -406,7 +430,7 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 	a.log(requestID, "", 0, started, *timings, "ok", nil)
 }
 
-func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID, sessionID string, chunkIndex, chunkTotal int, isLast bool, durationMs time.Duration, audio provider.Audio, speech provider.Speech, text provider.Text, mode string, started time.Time, timings *requestTimings) {
+func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.Context, requestID, sessionID string, chunkIndex, chunkTotal int, isLast bool, durationMs time.Duration, audio provider.Audio, speech provider.Speech, text provider.Text, compareEnabled bool, mode string, started time.Time, timings *requestTimings) {
 	state, _, err := a.sessions.getOrCreate(sessionID, chunkTotal)
 	if err != nil {
 		a.writeTimingHeader(w, timings)
@@ -495,7 +519,9 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 
 	timings.asrEmpty = strings.TrimSpace(rawText) == ""
 
-	a.compareChunk(sessionID, chunkIndex, durationMs.Milliseconds(), audio, rawText, asrElapsed)
+	if compareEnabled {
+		a.compareChunk(sessionID, chunkIndex, durationMs.Milliseconds(), audio, rawText, asrElapsed)
+	}
 
 	complete := state.store(chunkIndex, rawText, time.Now(), isLast)
 	if complete {
@@ -584,15 +610,15 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 		}
 		// snapshot already includes this chunk's text (we stored it before
 		// calling waitForCompletion above).
-		a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, mode, started, timings)
+		a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, compareEnabled, mode, started, timings)
 		return
 	}
 
 	all := state.snapshot()
-	a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, mode, started, timings)
+	a.mergeAndPolish(w, ctx, requestID, sessionID, chunkTotal, all, text, compareEnabled, mode, started, timings)
 }
 
-func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, requestID, sessionID string, chunkTotal int, chunks []string, text provider.Text, mode string, started time.Time, timings *requestTimings) {
+func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, requestID, sessionID string, chunkTotal int, chunks []string, text provider.Text, compareEnabled bool, mode string, started time.Time, timings *requestTimings) {
 	// Tidy: cleanup session regardless of outcome.
 	defer func() {
 		a.logSessionMetrics(sessionID, timings)
@@ -609,7 +635,9 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 			RawText:    joined,
 			FinalText:  joined,
 		})
-		a.compareFinalize(sessionID, chunkTotal, joined)
+		if compareEnabled {
+			a.compareFinalize(sessionID, chunkTotal, joined)
+		}
 		a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked_raw", nil)
 		return
 	}
@@ -653,7 +681,9 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 				RawText:    joined,
 				FinalText:  "",
 			})
-			a.compareFinalize(sessionID, chunkTotal, "")
+			if compareEnabled {
+				a.compareFinalize(sessionID, chunkTotal, "")
+			}
 			a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_empty_polish", nil)
 			return
 		}
@@ -669,7 +699,9 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 			},
 		})
 		a.log(requestID, sessionID, chunkTotal, started, *timings, "polishing_failed", err)
-		a.compareFinalize(sessionID, chunkTotal, "")
+		if compareEnabled {
+			a.compareFinalize(sessionID, chunkTotal, "")
+		}
 		return
 	}
 
@@ -681,7 +713,9 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 		RawText:    joined,
 		FinalText:  finalText,
 	})
-	a.compareFinalize(sessionID, chunkTotal, finalText)
+	if compareEnabled {
+		a.compareFinalize(sessionID, chunkTotal, finalText)
+	}
 	a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_chunked", nil)
 }
 
@@ -755,22 +789,49 @@ func (a *API) parseChunkFields(r *http.Request) (sessionID string, chunkIndex, c
 	return sessionID, idx, total, isLast, true, nil
 }
 
-func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Text, error) {
+// ErrGroqNotConfigured is returned by SpeechForProvider when the client asks
+// for the groq engine but the server has no GROQ_API_KEY configured.
+var ErrGroqNotConfigured = errors.New("groq not configured")
+
+var errUnsupportedASRProvider = errors.New("unsupported asr_provider")
+
+func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Text, string, error) {
 	const maxKeyLength = 512
 	speech := a.speech
 	text := a.text
 	qwenKey := strings.TrimSpace(r.Header.Get("X-TypeZero-DashScope-Key"))
 	deepSeekKey := strings.TrimSpace(r.Header.Get("X-TypeZero-DeepSeek-Key"))
 	if len(qwenKey) > maxKeyLength || len(deepSeekKey) > maxKeyLength {
-		return nil, nil, errors.New("API key exceeds maximum length")
-	}
-	if qwenKey != "" && a.speechForKey != nil {
-		speech = a.speechForKey(qwenKey)
+		return nil, nil, "", errors.New("API key exceeds maximum length")
 	}
 	if deepSeekKey != "" && a.textForKey != nil {
 		text = a.textForKey(deepSeekKey)
 	}
-	return speech, text, nil
+
+	requested := strings.TrimSpace(r.FormValue("asr_provider"))
+	if requested == "" {
+		// No explicit engine: use the server default (SPEECH_PROVIDER),
+		// with the caller's own DashScope key overriding the server key.
+		if qwenKey != "" && a.speechForKey != nil {
+			speech = a.speechForKey(qwenKey)
+		}
+		return speech, text, "", nil
+	}
+	if requested != "qwen" && requested != "groq" {
+		return nil, nil, "", errUnsupportedASRProvider
+	}
+	if a.speechForProvider == nil {
+		return nil, nil, "", errUnsupportedASRProvider
+	}
+	key := ""
+	if requested == "qwen" {
+		key = qwenKey
+	}
+	selected, err := a.speechForProvider(requested, key)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return selected, text, requested, nil
 }
 
 type clientError struct {
