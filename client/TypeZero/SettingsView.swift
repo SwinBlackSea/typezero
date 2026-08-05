@@ -169,8 +169,6 @@ private struct ServerURLField: NSViewRepresentable {
         field.isBezeled = true
         field.bezelStyle = .roundedBezel
         field.isAutomaticTextCompletionEnabled = false
-        field.isAutomaticTextReplacementEnabled = false
-        field.isAutomaticSpellingCorrectionEnabled = false
         field.delegate = context.coordinator
         return field
     }
