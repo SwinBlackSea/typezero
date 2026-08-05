@@ -35,6 +35,8 @@ struct AudioChunker {
     static let overlapSeconds: Double = 2.0
     /// Per-chunk audio length (seconds) sent to ASR.
     static var windowSeconds: Double { stepSeconds + overlapSeconds }
+    /// Per-chunk audio length in milliseconds (one full window).
+    static var windowMilliseconds: Int { Int((windowSeconds * 1000).rounded()) }
 
     /// A chunk of the original recording.
     struct Chunk {

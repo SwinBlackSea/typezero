@@ -291,7 +291,12 @@ final class AppModel: ObservableObject {
               let audio = try? Data(contentsOf: url, options: .mappedIfSafe),
               !audio.isEmpty else { return }
         let chunks = AudioChunker.chunk(wavData: audio)
-        guard chunks.count > 1 else { return }
+        // Only start incrementally uploading once the first full 32s window
+        // has been recorded. A recording that stops inside the first window
+        // is uploaded whole via the single-shot path instead of producing a
+        // near-empty tail chunk.
+        guard chunks.count > 1,
+              chunks[0].chunkEndMilliseconds - chunks[0].chunkStartMilliseconds >= AudioChunker.windowMilliseconds else { return }
         let toUpload = chunks.dropLast().filter { !uploadedChunkIndexes.contains($0.chunkIndex) }
         guard !toUpload.isEmpty else { return }
 

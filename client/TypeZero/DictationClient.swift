@@ -109,10 +109,18 @@ struct DictationClient: Sendable {
     /// fires them in parallel; the final chunk's response carries the polished
     /// text and per-chunk timing breakdown.
     func uploadChunked(recording: Recording) async throws -> DictationUploadResult {
+        // Recordings within one full 32s window produce a single chunk with
+        // nothing to merge, so upload them as one shot. This also skips the
+        // WAV chunk parser entirely: a JUNK-block header can otherwise make
+        // the chunker report "无法切分音频" on an otherwise valid recording.
+        if recording.durationMilliseconds < AudioChunker.windowMilliseconds {
+            return try await upload(recording: recording)
+        }
         let preparationStarted = Date()
         let (audio, chunks) = try await Self.loadAndChunkRecording(
             url: recording.url,
-            durationMs: recording.durationMilliseconds
+            durationMs: recording.durationMilliseconds,
+            mustCover: []
         )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
@@ -125,7 +133,10 @@ struct DictationClient: Sendable {
         }
 
         guard !chunks.isEmpty else {
-            throw ClientError.invalidRecording(Self.parseFailureMessage(audio: audio))
+            // Chunking could not produce a usable split after retries; fall
+            // back to a whole-file upload so the audio still reaches the
+            // server and gets transcribed there.
+            return try await upload(recording: recording)
         }
 
         let sessionID = UUID().uuidString
@@ -210,7 +221,8 @@ struct DictationClient: Sendable {
         let preparationStarted = Date()
         let (audio, chunks) = try await Self.loadAndChunkRecording(
             url: recording.url,
-            durationMs: recording.durationMilliseconds
+            durationMs: recording.durationMilliseconds,
+            mustCover: alreadyUploaded
         )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
@@ -219,7 +231,12 @@ struct DictationClient: Sendable {
             throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
         guard !chunks.isEmpty, let lastChunk = chunks.last else {
-            throw ClientError.invalidRecording(Self.parseFailureMessage(audio: audio))
+            // The stop-time read never stabilized into a chunk set that
+            // covers the segments already uploaded during recording. Fall
+            // back to a whole-file single shot rather than silently
+            // re-uploading an earlier chunk as the final one (which would
+            // drop the tail of the recording).
+            return try await upload(recording: recording)
         }
         let preparationMilliseconds = elapsedMilliseconds(since: preparationStarted)
         let requestStarted = Date()
@@ -287,7 +304,10 @@ struct DictationClient: Sendable {
     /// (tests, future feature flags).
     func upload(recording: Recording) async throws -> DictationUploadResult {
         let preparationStarted = Date()
-        let audio = try Data(contentsOf: recording.url, options: .mappedIfSafe)
+        let audio = try await Self.readRecordingData(
+            url: recording.url,
+            expectedBytes: Self.expectedWAVBytes(durationMs: recording.durationMilliseconds)
+        )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
         }
@@ -536,24 +556,63 @@ struct DictationClient: Sendable {
     /// Reads the finished recording and chunks it. AVAudioRecorder.stop() can
     /// return while buffered samples are still being flushed to disk, so the
     /// file may briefly be shorter than the recorded duration or carry a torn
-    /// header that makes AudioChunker return no chunks. Retry until the file
-    /// reaches the expected size AND parses into at least one chunk; if it
-    /// never settles, return the last read so the existing diagnostics fire.
+    /// header that makes AudioChunker return no chunks. Retry until the chunk
+    /// set is usable: non-empty, covers every index the incremental flusher
+    /// already uploaded, and spans close to the recorder-declared duration
+    /// (a stale read of an in-progress file yields a truncated set). If it
+    /// never settles, return the last read so the caller can fall back.
     private static func loadAndChunkRecording(
         url: URL,
-        durationMs: Int
+        durationMs: Int,
+        mustCover: Set<Int>
     ) async throws -> (Data, [AudioChunker.Chunk]) {
         let expectedBytes = Self.expectedWAVBytes(durationMs: durationMs)
-        var data = try Data(contentsOf: url)
+        var data = try await Self.readRecordingData(url: url, expectedBytes: expectedBytes)
         var chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
-        var attempt = 0
-        while (data.count < expectedBytes || chunks.isEmpty) && attempt < 15 {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            data = try Data(contentsOf: url)
-            chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
-            attempt += 1
+        if !isUsableChunkSet(chunks, durationMs: durationMs, mustCover: mustCover) {
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                data = try Data(contentsOf: url)
+                chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
+                if isUsableChunkSet(chunks, durationMs: durationMs, mustCover: mustCover) {
+                    break
+                }
+            }
         }
         return (data, chunks)
+    }
+
+    /// A chunk set is usable when it has at least one chunk, contains every
+    /// index the incremental flusher already uploaded, and ends close to the
+    /// recorder-declared duration. The last condition rejects a stale read
+    /// whose parsed length is far shorter than what was actually recorded
+    /// (the silent-tail-loss failure mode).
+    private static func isUsableChunkSet(
+        _ chunks: [AudioChunker.Chunk],
+        durationMs: Int,
+        mustCover: Set<Int>
+    ) -> Bool {
+        guard let lastChunk = chunks.last else { return false }
+        let indexes = Set(chunks.map { $0.chunkIndex })
+        guard mustCover.allSatisfy({ indexes.contains($0) }) else { return false }
+        let minimumEndMs = max(0, durationMs - 2000)
+        return lastChunk.chunkEndMilliseconds >= minimumEndMs
+    }
+
+    /// AVAudioRecorder.stop() can return while buffered samples are still
+    /// being flushed to disk, so the finished WAV may briefly be shorter than
+    /// the recorded duration. Retry the read until the file reaches the
+    /// expected size (or a short budget is exhausted) so a truncated file is
+    /// not handed to the chunker or uploader.
+    private static func readRecordingData(url: URL, expectedBytes: Int) async throws -> Data {
+        var data = try Data(contentsOf: url)
+        var attempt = 0
+        while data.count < expectedBytes && attempt < 15 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            data = try Data(contentsOf: url)
+            attempt += 1
+        }
+        return data
     }
 
     /// Floor of the recording duration in bytes for the 16 kHz mono 16-bit
@@ -563,27 +622,6 @@ struct DictationClient: Sendable {
     private static func expectedWAVBytes(durationMs: Int) -> Int {
         let seconds = durationMs / 1000
         return AudioChunker.headerSize + seconds * AudioChunker.bytesPerSecond
-    }
-
-    /// Diagnostic for parse failures: formats the failure message with the
-    /// file's magic bytes so the exact content can be identified, and keeps
-    /// a copy of the raw recording under ~/typezero-debug/ for inspection.
-    private static func parseFailureMessage(audio: Data) -> String {
-        preserveParseFailure(data: audio)
-        return "录音文件解析失败（\(Self.megabytes(audio.count)) MB，头部=\(Self.debugHeader(audio))），无法切分音频"
-    }
-
-    private static func debugHeader(_ data: Data) -> String {
-        let bytes = [UInt8](data.prefix(16))
-        return bytes.map { String(format: "%02X", $0) }.joined()
-    }
-
-    private static func preserveParseFailure(data: Data) {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("typezero-debug", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let file = dir.appendingPathComponent("failed-\(UUID().uuidString).wav")
-        try? data.write(to: file, options: .atomic)
     }
 }
 
