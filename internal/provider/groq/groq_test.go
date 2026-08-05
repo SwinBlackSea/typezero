@@ -30,8 +30,8 @@ func TestTranscribe(t *testing.T) {
 		if got := r.FormValue("language"); got != "" {
 			t.Errorf("language field present = %q, want empty (auto-detect)", got)
 		}
-		if got := r.FormValue("prompt"); got != "专有名词：Groq、Qwen、DeepSeek" {
-			t.Errorf("prompt = %q", got)
+		if got := r.FormValue("prompt"); got != "" {
+			t.Errorf("prompt field present = %q, want empty (no fixed prompt)", got)
 		}
 		file, _, err := r.FormFile("file")
 		if err != nil {
@@ -42,7 +42,7 @@ func TestTranscribe(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.Client(), server.URL, "secret", "whisper-large-v3", "专有名词：Groq、Qwen、DeepSeek")
+	client := New(server.Client(), server.URL, "secret", "whisper-large-v3")
 	got, err := client.Transcribe(context.Background(), provider.Audio{Data: []byte{1, 2, 3}, MediaType: "audio/wav"})
 	if err != nil {
 		t.Fatalf("Transcribe() error = %v", err)
@@ -65,7 +65,7 @@ func TestTranscribeRetriesRateLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.Client(), server.URL, "secret", "whisper-large-v3", "")
+	client := New(server.Client(), server.URL, "secret", "whisper-large-v3")
 	got, err := client.Transcribe(context.Background(), provider.Audio{Data: []byte{1}, MediaType: "audio/wav"})
 	if err != nil {
 		t.Fatalf("Transcribe() error = %v", err)
@@ -84,7 +84,7 @@ func TestTranscribeEmptyIsSoftFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.Client(), server.URL, "secret", "whisper-large-v3", "")
+	client := New(server.Client(), server.URL, "secret", "whisper-large-v3")
 	_, err := client.Transcribe(context.Background(), provider.Audio{Data: []byte{1}, MediaType: "audio/wav"})
 	if err != provider.ErrEmptyTranscript {
 		t.Fatalf("Transcribe() error = %v, want ErrEmptyTranscript", err)
@@ -102,7 +102,7 @@ func TestTranscribeTimeoutNoRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&http.Client{Timeout: 50 * time.Millisecond}, server.URL, "secret", "whisper-large-v3", "")
+	client := New(&http.Client{Timeout: 50 * time.Millisecond}, server.URL, "secret", "whisper-large-v3")
 	_, err := client.Transcribe(context.Background(), provider.Audio{Data: []byte{1}, MediaType: "audio/wav"})
 	if err == nil {
 		t.Fatal("Transcribe() error = nil, want timeout")

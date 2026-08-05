@@ -30,8 +30,6 @@ type Dependencies struct {
 	CompareSpeech     provider.Speech
 	CompareLabel      string
 	CompareFile       string
-	PolishCompare     bool
-	PolishCompareFile string
 	TestAudioDir      string
 	Logger            *slog.Logger
 	MaxAudioBytes     int64
@@ -49,7 +47,6 @@ type API struct {
 	speechForKey   func(string) provider.Speech
 	textForKey     func(string) provider.Text
 	compare        *compareRecorder
-	polishCompare  *polishCompareRecorder
 	testAudioDir   string
 	logger         *slog.Logger
 	maxAudioBytes  int64
@@ -139,7 +136,6 @@ func New(deps Dependencies) http.Handler {
 		speechForKey:   deps.SpeechForKey,
 		textForKey:     deps.TextForKey,
 		compare:        nil,
-		polishCompare:  nil,
 		testAudioDir:   deps.TestAudioDir,
 		logger:         deps.Logger,
 		maxAudioBytes:  deps.MaxAudioBytes,
@@ -151,9 +147,6 @@ func New(deps Dependencies) http.Handler {
 	}
 	if deps.CompareSpeech != nil && deps.CompareFile != "" {
 		api.compare = newCompareRecorder(deps.CompareFile, deps.RequestTimeout, deps.PrimaryLabel, deps.CompareLabel, deps.CompareSpeech, deps.Text, deps.Logger)
-	}
-	if deps.PolishCompare && deps.PolishCompareFile != "" {
-		api.polishCompare = newPolishCompareRecorder(deps.PolishCompareFile, deps.Text, deps.Logger)
 	}
 	if deps.Logger != nil {
 		api.sessions.setLogger(deps.Logger.With("component", "session_store"))
@@ -385,7 +378,15 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 	finalText, err := text.Polish(ctx, rawText)
 	timings.polish = time.Since(polishStarted)
 	if err != nil {
-		a.polishCompare.run("", 1, []string{rawText}, "")
+		// An empty polish result means the model cleaned the input down to
+		// nothing (pure noise/filler): that is a valid outcome, not a
+		// failure — return an empty final text instead of a warning.
+		if errors.Is(err, provider.ErrEmptyTranscript) {
+			a.writeTimingHeader(w, timings)
+			writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: ""})
+			a.log(requestID, "", 0, started, *timings, "ok_empty_polish", nil)
+			return
+		}
 		response := dictationResponse{
 			RequestID: requestID,
 			RawText:   rawText,
@@ -400,7 +401,6 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 		return
 	}
 
-	a.polishCompare.run("", 1, []string{rawText}, finalText)
 	a.writeTimingHeader(w, timings)
 	writeJSON(w, http.StatusOK, dictationResponse{RequestID: requestID, RawText: rawText, FinalText: finalText})
 	a.log(requestID, "", 0, started, *timings, "ok", nil)
@@ -644,7 +644,19 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 	timings.mergeDedupe = timings.polish
 
 	if err != nil {
-		a.polishCompare.run(sessionID, chunkTotal, chunks, "")
+		if errors.Is(err, provider.ErrEmptyTranscript) {
+			a.writeTimingHeader(w, timings)
+			writeJSON(w, http.StatusOK, dictationResponse{
+				RequestID:  requestID,
+				SessionID:  sessionID,
+				ChunkCount: chunkTotal,
+				RawText:    joined,
+				FinalText:  "",
+			})
+			a.compareFinalize(sessionID, chunkTotal, "")
+			a.log(requestID, sessionID, chunkTotal, started, *timings, "ok_empty_polish", nil)
+			return
+		}
 		a.writeTimingHeader(w, timings)
 		writeJSON(w, http.StatusOK, dictationResponse{
 			RequestID:  requestID,
@@ -661,7 +673,6 @@ func (a *API) mergeAndPolish(w http.ResponseWriter, ctx context.Context, request
 		return
 	}
 
-	a.polishCompare.run(sessionID, chunkTotal, chunks, finalText)
 	a.writeTimingHeader(w, timings)
 	writeJSON(w, http.StatusOK, dictationResponse{
 		RequestID:  requestID,

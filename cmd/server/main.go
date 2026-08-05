@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"typezero/internal/config"
-	"typezero/internal/hotwords"
 	"typezero/internal/httpapi"
 	"typezero/internal/provider"
 	"typezero/internal/provider/deepseek"
@@ -29,18 +28,13 @@ func main() {
 
 	httpClient := &http.Client{Timeout: cfg.ProviderTimeout}
 	speech := provider.Speech(qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout))
-	hotwordStore := hotwords.New(cfg.HotwordsFile)
-	if _, err := os.Stat(cfg.HotwordsFile); errors.Is(err, os.ErrNotExist) {
-		logger.Warn("hotwords file not found; hotword table is empty", "path", cfg.HotwordsFile)
-	}
 	if cfg.SpeechProvider == "groq" {
 		// Groq Whisper runs at roughly real-time or faster and is not subject
 		// to DashScope's queueing; it is the preferred ASR when configured.
 		// Clients that pass their own DashScope key still use Qwen.
-		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt)
+		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
 	}
-	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, hotwordStore)
-	text.SetHotwordGuidance(cfg.HotwordGuidance)
+	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel)
 	primaryLabel := cfg.SpeechProvider
 	var compareSpeech provider.Speech
 	compareLabel := ""
@@ -49,7 +43,7 @@ func main() {
 			compareSpeech = qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 			compareLabel = "qwen"
 		} else if cfg.GroqAPIKey != "" {
-			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel, cfg.GroqPrompt)
+			compareSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
 			compareLabel = "groq"
 		}
 	}
@@ -60,14 +54,12 @@ func main() {
 			return qwen.New(httpClient, cfg.QwenURL, apiKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 		},
 		TextForKey: func(apiKey string) provider.Text {
-			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel, hotwordStore).SetHotwordGuidance(cfg.HotwordGuidance)
+			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel)
 		},
 		PrimaryLabel:      primaryLabel,
 		CompareSpeech:     compareSpeech,
 		CompareLabel:      compareLabel,
 		CompareFile:       cfg.ASRCompareFile,
-		PolishCompare:     cfg.PolishCompare,
-		PolishCompareFile: cfg.PolishCompareFile,
 		TestAudioDir:      cfg.TestAudioDir,
 		Logger:            logger,
 		MaxAudioBytes:     cfg.MaxAudioBytes,

@@ -21,7 +21,7 @@ func TestPolishDisablesThinking(t *testing.T) {
 		if payload.Thinking.Type != "disabled" {
 			t.Errorf("thinking.type = %q", payload.Thinking.Type)
 		}
-		if payload.Messages[0].Content != systemPrompt(nil) {
+		if payload.Messages[0].Content != systemPrompt() {
 			t.Errorf("unexpected system prompt = %q", payload.Messages[0].Content)
 		}
 		if len(payload.Messages) != 2 || payload.Messages[1].Content != "我我想测试" {
@@ -32,7 +32,7 @@ func TestPolishDisablesThinking(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.Client(), server.URL, "secret", "deepseek-v4-flash", nil)
+	client := New(server.Client(), server.URL, "secret", "deepseek-v4-flash")
 	got, err := client.Polish(context.Background(), "我我想测试")
 	if err != nil {
 		t.Fatalf("Polish() error = %v", err)
@@ -48,17 +48,8 @@ func TestSystemPromptStructuresExplicitListsWithoutForcingThem(t *testing.T) {
 		"普通聊天、单一陈述和自然段不要强行改成列表",
 		"不添加事实、观点、标题、事项或解释",
 	} {
-		if !strings.Contains(systemPrompt(nil), phrase) {
+		if !strings.Contains(systemPrompt(), phrase) {
 			t.Errorf("system prompt missing %q", phrase)
-		}
-	}
-}
-
-func TestSystemPromptIncludesDynamicHotwords(t *testing.T) {
-	got := systemPrompt([]string{"Groq", "悬浮胶囊"})
-	for _, phrase := range []string{"动态热词", "Groq、悬浮胶囊", "按标准写法修正"} {
-		if !strings.Contains(got, phrase) {
-			t.Errorf("dynamic system prompt missing %q:\n%s", phrase, got)
 		}
 	}
 }

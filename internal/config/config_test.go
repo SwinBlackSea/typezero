@@ -41,7 +41,6 @@ func setMinimalEnv(t *testing.T) {
 		"GROQ_API_KEY":        "",
 		"GROQ_MODEL":          "",
 		"GROQ_API_URL":        "",
-		"HOTWORDS_FILE":       "",
 		"TRUSTED_PROXY_CIDR":  "",
 	}
 	for key, value := range values {
