@@ -12,6 +12,32 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.DeepSeekModel != "deepseek-v4-flash" {
 		t.Fatalf("DeepSeekModel = %q", cfg.DeepSeekModel)
 	}
+	if cfg.ChunkSeconds != 30 {
+		t.Fatalf("ChunkSeconds = %d, want default 30", cfg.ChunkSeconds)
+	}
+}
+
+func TestFromEnvParsesChunkSeconds(t *testing.T) {
+	setMinimalEnv(t)
+	t.Setenv("CHUNK_SECONDS", "10")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	if cfg.ChunkSeconds != 10 {
+		t.Fatalf("ChunkSeconds = %d, want 10", cfg.ChunkSeconds)
+	}
+}
+
+func TestFromEnvRejectsChunkSecondsOutOfRange(t *testing.T) {
+	setMinimalEnv(t)
+	for _, value := range []string{"-1", "121"} {
+		t.Setenv("CHUNK_SECONDS", value)
+		if _, err := FromEnv(); err == nil {
+			t.Fatalf("FromEnv() error = nil for CHUNK_SECONDS=%q", value)
+		}
+	}
 }
 
 func TestFromEnvRejectsRemoteHTTPProvider(t *testing.T) {
@@ -41,6 +67,7 @@ func setMinimalEnv(t *testing.T) {
 		"GROQ_API_KEY":        "",
 		"GROQ_MODEL":          "",
 		"GROQ_API_URL":        "",
+		"CHUNK_SECONDS":       "",
 		"TRUSTED_PROXY_CIDR":  "",
 	}
 	for key, value := range values {

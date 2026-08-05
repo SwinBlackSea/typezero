@@ -84,6 +84,37 @@ func TestDictationSuccess(t *testing.T) {
 	}
 }
 
+func TestHealthReportsChunkSeconds(t *testing.T) {
+	handler := New(Dependencies{
+		Speech:         speechStub{text: "x"},
+		Text:           &textStub{text: "y"},
+		ChunkSeconds:   10,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+	})
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	var body struct {
+		Status       string `json:"status"`
+		ChunkSeconds int    `json:"chunk_seconds"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "ok" || body.ChunkSeconds != 10 {
+		t.Fatalf("health = %#v", body)
+	}
+}
+
 func TestDictationReturnsRawTextWhenPolishingFails(t *testing.T) {
 	handler := testHandler(speechStub{text: "原始文字"}, &textStub{err: errors.New("unavailable")})
 	request := multipartRequest(t, testWAV(time.Second), "recording.wav", "1000", "polished")
@@ -112,6 +143,27 @@ func TestDictationRejectsLongAudioBeforeProviderCall(t *testing.T) {
 
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDictationRejectsSingleShotOverThreeMinutes(t *testing.T) {
+	handler := testHandler(speechStub{text: "should not be returned"}, &textStub{})
+	request := multipartRequest(t, testWAV(time.Second), "recording.wav", "190000", "polished")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Error apiError `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "single_shot_too_long" {
+		t.Fatalf("error code = %q", body.Error.Code)
 	}
 }
 

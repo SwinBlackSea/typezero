@@ -37,6 +37,11 @@ type Config struct {
 	GroqAPIKey        string
 	GroqModel         string
 	GroqURL           string
+	// ChunkSeconds is the global chunking interval applied to every
+	// recording: 0 disables chunking (whole file, single ASR call), N cuts
+	// every N seconds with a fixed 2s overlap (window = N+2s). The value is
+	// exposed via /healthz so the client can cut accordingly.
+	ChunkSeconds      int
 	ASRCompare        bool
 	ASRCompareFile    string
 	TestAudioDir      string
@@ -70,6 +75,7 @@ func FromEnv() (Config, error) {
 		GroqAPIKey:       strings.TrimSpace(os.Getenv("GROQ_API_KEY")),
 		GroqModel:        envOr("GROQ_MODEL", "whisper-large-v3"),
 		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
+		ChunkSeconds:     30,
 		ASRCompare:        envBool("ASR_COMPARE"),
 		ASRCompareFile:    envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),
 		TestAudioDir:      strings.TrimSpace(os.Getenv("TEST_AUDIO_DIR")),
@@ -100,6 +106,12 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.ASRConcurrency < 1 {
 		return Config{}, errors.New("ASR_CONCURRENCY must be positive")
+	}
+	if cfg.ChunkSeconds, err = intEnv("CHUNK_SECONDS", cfg.ChunkSeconds); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChunkSeconds < 0 || cfg.ChunkSeconds > 120 {
+		return Config{}, errors.New("CHUNK_SECONDS must be between 0 and 120")
 	}
 	if err := validateProviderURL("QWEN_API_URL", cfg.QwenURL); err != nil {
 		return Config{}, err

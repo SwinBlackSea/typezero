@@ -30,6 +30,7 @@ type Dependencies struct {
 	CompareSpeech     provider.Speech
 	CompareLabel      string
 	CompareFile       string
+	ChunkSeconds      int
 	TestAudioDir      string
 	Logger            *slog.Logger
 	MaxAudioBytes     int64
@@ -47,6 +48,7 @@ type API struct {
 	speechForKey   func(string) provider.Speech
 	textForKey     func(string) provider.Text
 	compare        *compareRecorder
+	chunkSeconds   int
 	testAudioDir   string
 	logger         *slog.Logger
 	maxAudioBytes  int64
@@ -136,6 +138,7 @@ func New(deps Dependencies) http.Handler {
 		speechForKey:   deps.SpeechForKey,
 		textForKey:     deps.TextForKey,
 		compare:        nil,
+		chunkSeconds:   deps.ChunkSeconds,
 		testAudioDir:   deps.TestAudioDir,
 		logger:         deps.Logger,
 		maxAudioBytes:  deps.MaxAudioBytes,
@@ -167,7 +170,10 @@ func New(deps Dependencies) http.Handler {
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "ok",
+		"chunk_seconds": a.chunkSeconds,
+	})
 }
 
 // acquireASR reserves one ASR slot so the number of concurrent upstream
@@ -298,10 +304,24 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, declaredDuration, audio, speech, text, mode, started, &timings)
 		return
 	}
+	// A single-shot upload reaches the ASR provider in one call. Qwen-ASR
+	// caps a single call at 3 minutes, so longer whole-file uploads must go
+	// through chunking (CHUNK_SECONDS>0) instead of failing cryptically.
+	if declaredDuration > maxSingleShotDuration {
+		timings.intake = time.Since(intakeStarted)
+		a.writeTimingHeader(w, &timings)
+		a.fail(w, http.StatusUnprocessableEntity, "single_shot_too_long", "单段识别上限 3 分钟，请配置切割（CHUNK_SECONDS>0）或缩短录音")
+		a.log(requestID, "", 0, started, timings, "single_shot_too_long", nil)
+		return
+	}
 
 	a.saveTestAudio(requestID, "", 0, audio.Data)
 	a.handleSingle(w, r, ctx, requestID, audio, speech, text, mode, started, &timings)
 }
+
+// maxSingleShotDuration is the Qwen-ASR per-call ceiling (3 minutes / 10 MB).
+// Whole-file uploads longer than this are rejected unless the client chunks.
+const maxSingleShotDuration = 3 * time.Minute
 
 // saveTestAudio persists an uploaded WAV under TEST_AUDIO_DIR (test mode only)
 // so the same recording can be replayed against different provider configs

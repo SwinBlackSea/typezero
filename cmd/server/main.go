@@ -60,6 +60,7 @@ func main() {
 		CompareSpeech:     compareSpeech,
 		CompareLabel:      compareLabel,
 		CompareFile:       cfg.ASRCompareFile,
+		ChunkSeconds:      cfg.ChunkSeconds,
 		TestAudioDir:      cfg.TestAudioDir,
 		Logger:            logger,
 		MaxAudioBytes:     cfg.MaxAudioBytes,
