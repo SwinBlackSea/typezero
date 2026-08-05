@@ -37,7 +37,7 @@ macOS 客户端
 
 ## 后端
 
-- 技术栈：Go，无状态 HTTP 单进程服务。
+- 技术栈：Go，HTTP 单进程服务；运行期仅持久化一份服务端全局配置（`server-config.json`，只含 `speech_provider` 与 `chunk_seconds`，不含任何密钥），其余保持无状态。
 - 核心接口：`POST /v1/dictations`，接收音频和输出模式，返回 `raw_text`、`final_text` 及错误信息。
 - 语音识别：`SPEECH_PROVIDER` 可选 `qwen`（DashScope）或 `groq`（Groq Whisper），默认 `qwen`。实测 Groq `whisper-large-v3` 为实时数倍速（10s 音频约 0.4s、30s 约 1.0s、60s 约 1.2s），且不受 DashScope 账号排队影响，为当前首选；Qwen 作为国内可用性的备用。客户端限制单次录音不超过 5 分钟、10 MiB。
 - 切割配置：`CHUNK_SECONDS`（默认 30，范围 0–120）。`0` = 不切割，整段直传（Qwen-ASR 单次上限 3 分钟，超出会被服务端明确拒绝）；`N` = 每 N 秒切一段、2 秒重叠、窗口 N+2 秒（第一段即 N+2 秒）。识别引擎与切割间隔都是服务端全局配置：`SPEECH_PROVIDER` / `CHUNK_SECONDS` 是环境默认值，客户端设置页可经 `/config` 直接修改并持久化到 `server-config.json`（该文件存在时优先于环境变量），对所有录音生效。客户端录音前从 `/healthz` 拉取 `chunk_seconds` 按此切割，不随请求上传任何配置。
