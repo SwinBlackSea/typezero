@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -18,9 +19,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         Text("服务地址")
                             .font(.subheadline)
-                        TextField("http://127.0.0.1:8080", text: $model.serverURLText)
-                            .textFieldStyle(.roundedBorder)
-                            .autocorrectionDisabled()
+                        ServerURLField(text: $model.serverURLText)
                         Text("开发阶段可使用 HTTP；正式发布时请使用 HTTPS。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -150,5 +149,48 @@ private struct PermissionRow: View {
                 .foregroundColor(.accentColor)
         }
         .padding(.vertical, 9)
+    }
+}
+
+/// AppKit-backed server address field. SwiftUI's TextField inherits the
+/// system automatic text completion UI, which shows an empty floating
+/// dropdown while editing; an NSTextField with automatic completion and
+/// replacement disabled removes it.
+private struct ServerURLField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: text)
+        field.placeholderString = "http://127.0.0.1:8080"
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.isAutomaticTextCompletionEnabled = false
+        field.isAutomaticTextReplacementEnabled = false
+        field.isAutomaticSpellingCorrectionEnabled = false
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: ServerURLField
+
+        init(_ parent: ServerURLField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
     }
 }
