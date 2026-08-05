@@ -161,12 +161,44 @@ struct AudioChunker {
             offset = bodyStart + paddedSize
         }
 
-        guard let dataOffset, let dataSize else { return nil }
+        guard let dataOffset, let dataSize else {
+            // Sequential walk missed the data chunk. This happens when an
+            // auxiliary chunk (JUNK/LIST/FLLR) carries a torn or stale size
+            // while the file is still being written, which pushes the walker
+            // past the real payload. The data tag always sits in the first
+            // bytes of a RIFF/WAVE file, so scan the header region for it.
+            return findDataChunkByScan(in: wavData)
+        }
         // fmt is not strictly required for chunk construction (we hardcode
         // the 16 kHz mono 16-bit PCM params), but we keep walking to make
         // the parser robust against unexpected layouts.
         _ = fmtBytes
         return PCMRegion(payloadOffset: dataOffset, length: dataSize)
+    }
+
+    /// Recovers the PCM payload when the sequential chunk walk fails to find
+    /// the `data` chunk. The real data tag is always near the start of a
+    /// RIFF/WAVE file (before any PCM bytes), so the first occurrence in the
+    /// header region is safe to use. A zero declared size (header not yet
+    /// finalized) falls back to the bytes actually present in the file.
+    private static func findDataChunkByScan(in wavData: Data) -> PCMRegion? {
+        let scanLimit = min(wavData.count, 4096)
+        guard scanLimit > 12 else { return nil }
+        var offset = 12
+        while offset + 8 <= scanLimit {
+            if asciiEqual(wavData, offset, "data") {
+                let size = readU32LE(wavData, at: offset + 4)
+                let bodyStart = offset + 8
+                let availableBytes = wavData.count - bodyStart
+                guard availableBytes > 0 else { break }
+                let payload = size > 0 ? min(Int(size), availableBytes) : availableBytes
+                if payload > 0 {
+                    return PCMRegion(payloadOffset: bodyStart, length: payload)
+                }
+            }
+            offset += 1
+        }
+        return nil
     }
 
     /// Convert a millisecond offset into a byte offset within the PCM payload.

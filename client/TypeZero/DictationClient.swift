@@ -110,9 +110,9 @@ struct DictationClient: Sendable {
     /// text and per-chunk timing breakdown.
     func uploadChunked(recording: Recording) async throws -> DictationUploadResult {
         let preparationStarted = Date()
-        let audio = try await Self.readRecordingData(
+        let (audio, chunks) = try await Self.loadAndChunkRecording(
             url: recording.url,
-            expectedBytes: Self.expectedWAVBytes(durationMs: recording.durationMilliseconds)
+            durationMs: recording.durationMilliseconds
         )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
@@ -124,10 +124,6 @@ struct DictationClient: Sendable {
             throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
 
-        let chunks = AudioChunker.chunk(
-            wavData: audio,
-            declaredDurationMs: recording.durationMilliseconds
-        )
         guard !chunks.isEmpty else {
             throw ClientError.invalidRecording("录音文件解析失败（\(Self.megabytes(audio.count)) MB），无法切分音频")
         }
@@ -212,9 +208,9 @@ struct DictationClient: Sendable {
         alreadyUploaded: Set<Int>
     ) async throws -> DictationUploadResult {
         let preparationStarted = Date()
-        let audio = try await Self.readRecordingData(
+        let (audio, chunks) = try await Self.loadAndChunkRecording(
             url: recording.url,
-            expectedBytes: Self.expectedWAVBytes(durationMs: recording.durationMilliseconds)
+            durationMs: recording.durationMilliseconds
         )
         guard !audio.isEmpty else {
             throw ClientError.invalidRecording("录音文件为空，请重新录音")
@@ -222,10 +218,6 @@ struct DictationClient: Sendable {
         guard audio.count <= 12 << 20 else {
             throw ClientError.invalidRecording("录音文件过大（\(Self.megabytes(audio.count)) MB），超过上传上限")
         }
-        let chunks = AudioChunker.chunk(
-            wavData: audio,
-            declaredDurationMs: recording.durationMilliseconds
-        )
         guard !chunks.isEmpty, let lastChunk = chunks.last else {
             throw ClientError.invalidRecording("录音文件解析失败（\(Self.megabytes(audio.count)) MB），无法切分音频")
         }
@@ -541,22 +533,27 @@ struct DictationClient: Sendable {
         String(format: "%.1f", Double(byteCount) / Double(1 << 20))
     }
 
-    /// AVAudioRecorder.stop() can return while buffered samples are still
-    /// being flushed to disk, so the finished WAV may briefly be shorter
-    /// than the recorded duration. Reading it immediately can silently drop
-    /// the tail (the chunker then sees only one 32s window, or nothing at
-    /// all). Retry until the file reaches the expected size before handing
-    /// it to the chunker; if it never settles, return whatever is on disk so
-    /// the existing empty/parse guards produce the usual diagnostics.
-    private static func readRecordingData(url: URL, expectedBytes: Int) async throws -> Data {
+    /// Reads the finished recording and chunks it. AVAudioRecorder.stop() can
+    /// return while buffered samples are still being flushed to disk, so the
+    /// file may briefly be shorter than the recorded duration or carry a torn
+    /// header that makes AudioChunker return no chunks. Retry until the file
+    /// reaches the expected size AND parses into at least one chunk; if it
+    /// never settles, return the last read so the existing diagnostics fire.
+    private static func loadAndChunkRecording(
+        url: URL,
+        durationMs: Int
+    ) async throws -> (Data, [AudioChunker.Chunk]) {
+        let expectedBytes = Self.expectedWAVBytes(durationMs: durationMs)
         var data = try Data(contentsOf: url)
+        var chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
         var attempt = 0
-        while data.count < expectedBytes && attempt < 15 {
+        while (data.count < expectedBytes || chunks.isEmpty) && attempt < 15 {
             try? await Task.sleep(nanoseconds: 100_000_000)
             data = try Data(contentsOf: url)
+            chunks = AudioChunker.chunk(wavData: data, declaredDurationMs: durationMs)
             attempt += 1
         }
-        return data
+        return (data, chunks)
     }
 
     /// Floor of the recording duration in bytes for the 16 kHz mono 16-bit
