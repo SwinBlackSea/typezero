@@ -177,15 +177,17 @@ struct AudioChunker {
     }
 
     /// Recovers the PCM payload when the sequential chunk walk fails to find
-    /// the `data` chunk. The real data tag is always near the start of a
-    /// RIFF/WAVE file (before any PCM bytes), so the first occurrence in the
-    /// header region is safe to use. A zero declared size (header not yet
-    /// finalized) falls back to the bytes actually present in the file.
+    /// the `data` chunk. This happens when an auxiliary chunk (JUNK/LIST/
+    /// FLLR) carries a torn or stale size while the file is still being
+    /// written, so the walker skips past the real payload. The real data tag
+    /// is the first occurrence of "data" in a RIFF/WAVE file (PCM bytes only
+    /// follow it), so scanning the whole file and taking the first match is
+    /// safe. A zero declared size (header not yet finalized) falls back to
+    /// the bytes actually present in the file.
     private static func findDataChunkByScan(in wavData: Data) -> PCMRegion? {
-        let scanLimit = min(wavData.count, 4096)
-        guard scanLimit > 12 else { return nil }
+        guard wavData.count > 12 else { return nil }
         var offset = 12
-        while offset + 8 <= scanLimit {
+        while offset + 8 <= wavData.count {
             if asciiEqual(wavData, offset, "data") {
                 let size = readU32LE(wavData, at: offset + 4)
                 let bodyStart = offset + 8
