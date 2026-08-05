@@ -40,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         model?.refreshShortcutMonitoring()
+        // Re-sync the floating capsule to the actual phase so a panel left
+        // over from an interrupted recording/processing state cannot linger
+        // as an empty transparent box once the app becomes active again.
+        if let phase = model?.phase {
+            recordingOverlay.update(for: phase)
+        }
     }
 
     private func updateIcon(for phase: AppModel.Phase) {
