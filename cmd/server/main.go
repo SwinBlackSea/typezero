@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -56,26 +55,6 @@ func main() {
 		},
 		TextForKey: func(apiKey string) provider.Text {
 			return deepseek.New(httpClient, cfg.DeepSeekURL, apiKey, cfg.DeepSeekModel)
-		},
-		// SpeechForProvider resolves the ASR engine requested by the client
-		// (asr_provider=qwen|groq). The empty default keeps SPEECH_PROVIDER
-		// authoritative when the client does not send the field.
-		SpeechForProvider: func(name, dashScopeKey string) (provider.Speech, error) {
-			switch name {
-			case "qwen":
-				key := cfg.QwenAPIKey
-				if dashScopeKey != "" {
-					key = dashScopeKey
-				}
-				return qwen.New(httpClient, cfg.QwenURL, key, cfg.QwenModel, cfg.QwenWaitTimeout), nil
-			case "groq":
-				if cfg.GroqAPIKey == "" {
-					return nil, httpapi.ErrGroqNotConfigured
-				}
-				return groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel), nil
-			default:
-				return nil, fmt.Errorf("unsupported asr provider %q", name)
-			}
 		},
 		PrimaryLabel:      primaryLabel,
 		CompareSpeech:     compareSpeech,

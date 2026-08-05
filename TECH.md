@@ -52,7 +52,6 @@ macOS 客户端
 - `audio`：必填，WAV 文件；当前默认 Qwen3-ASR-Flash 仅接受此格式，以避免模型对 M4A/MP4 容器的静默误识别。
 - `duration_ms`：必填，客户端测得的正整数毫秒数；服务端同时解析音频本身的时长。
 - `output_mode`：可选，`polished`（默认）或 `raw`；`raw` 跳过文字润色。
-- `asr_provider`：可选，`qwen` 或 `groq`。客户端在设置中选择识别引擎并随每个请求上传；缺省时使用服务端 `SPEECH_PROVIDER` 默认值。`groq` 需要服务端配置 `GROQ_API_KEY`，否则返回 `groq_not_configured`。
 
 用户自带 Key 时，客户端分别通过 `X-TypeZero-DashScope-Key` 和 `X-TypeZero-DeepSeek-Key` 请求头传递。服务端只在当前请求中使用，不保存、不回传、不写入日志；请求头未提供时使用服务端环境变量中的 Key。
 
@@ -91,7 +90,7 @@ macOS 客户端
 
 - 默认组合：Groq Whisper（whisper-large-v3）+ DeepSeek；Qwen3-ASR-Flash 为备用。
 - 延迟实测对比（同一 30s 音频）：Qwen 公共域名 72s、Qwen 专属域名 30s、Groq 约 1.0s。Groq 免费层无需银行卡（注册需过 Cloudflare 人机验证，建议用住宅 IP），付费层约 $0.111/小时；硅基流动已下架 Whisper，仅剩 SenseVoiceSmall / TeleSpeechASR，作为国内备选。
-- 对比模式：`ASR_COMPARE=1` 时服务端把每段音频同时发给主/备两个 ASR，逐段记录各自耗时与原始转写，并在会话结束时用同一 DeepSeek 润色备选结果，全部写入 `ASR_COMPARE_FILE`（默认 `/tmp/asr_compare.jsonl`，仅测试期开启，不进 server.log）。客户端显式指定 `asr_provider` 时跳过对比、只跑所选引擎；不指定时保持双跑。Groq 不发送 `language` 字段，逐段自动检测语言，避免固定 `zh` 把英文/中英混杂音频拖成中文乱码（历史实测教训）。
+- 对比模式：`ASR_COMPARE=1` 时服务端把每段音频同时发给主/备两个 ASR，逐段记录各自耗时与原始转写，并在会话结束时用同一 DeepSeek 润色备选结果，全部写入 `ASR_COMPARE_FILE`（默认 `/tmp/asr_compare.jsonl`，仅测试期开启，不进 server.log）。Groq 不发送 `language` 字段，逐段自动检测语言，避免固定 `zh` 把英文/中英混杂音频拖成中文乱码（历史实测教训）。
 - 中文/中英混录音实测（`ASR_COMPARE=1`）：Qwen 国内专线（`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`）速度已追平 Groq（10s 音频约 1.3~2.3s、32s 约 2.4~2.7s，Groq 约 0.5~2s），中文专有名词准确率明显更高（Groq 对同段中文听错 5 个词，Qwen 全对）。Groq 快但中文专有名词弱、静音段有幻觉，两者都不传固定语言与 prompt；专有名词纠错交给 DeepSeek 通用润色。
 - Qwen 适合国内调用，中文与方言覆盖较好，成本低，且符合录完后一次处理的模式。
 - ChatGPT/Codex 订阅不包含 API 调用额度，也不是产品运行依赖；模型 API 需要单独申请和计费。
