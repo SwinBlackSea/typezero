@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,10 +54,10 @@ func TestTranscribe(t *testing.T) {
 }
 
 func TestTranscribeRetriesRateLimit(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if calls < 2 {
+		calls.Add(1)
+		if calls.Load() < 2 {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}`))
 			return
@@ -73,8 +74,8 @@ func TestTranscribeRetriesRateLimit(t *testing.T) {
 	if got != "重试成功" {
 		t.Fatalf("Transcribe() = %q", got)
 	}
-	if calls != 2 {
-		t.Fatalf("expected 2 attempts, got %d", calls)
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", calls.Load())
 	}
 }
 
@@ -92,9 +93,9 @@ func TestTranscribeEmptyIsSoftFailure(t *testing.T) {
 }
 
 func TestTranscribeTimeoutNoRetry(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(5 * time.Second):
@@ -107,7 +108,7 @@ func TestTranscribeTimeoutNoRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("Transcribe() error = nil, want timeout")
 	}
-	if calls != 1 {
-		t.Fatalf("expected 1 attempt (no retry on timeout), got %d", calls)
+	if calls.Load() != 1 {
+		t.Fatalf("expected 1 attempt (no retry on timeout), got %d", calls.Load())
 	}
 }

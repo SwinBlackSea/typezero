@@ -208,8 +208,8 @@ func TestProvidersForRequestUsesRuntimeEngine(t *testing.T) {
 	runtime := serverconfig.New("", serverconfig.Config{SpeechProvider: "groq", ChunkSeconds: 30})
 	selected := ""
 	api := &API{
-		speech: speechStub{text: "default speech"},
-		text:   &textStub{text: "default text"},
+		speech:  speechStub{text: "default speech"},
+		text:    &textStub{text: "default text"},
 		runtime: runtime,
 		speechForProvider: func(name, key string) (provider.Speech, error) {
 			selected = name
@@ -263,24 +263,38 @@ func TestDictationRejectsLongAudioBeforeProviderCall(t *testing.T) {
 	}
 }
 
-func TestDictationRejectsSingleShotOverThreeMinutes(t *testing.T) {
-	handler := testHandler(speechStub{text: "should not be returned"}, &textStub{})
-	request := multipartRequest(t, testWAV(time.Second), "recording.wav", "190000", "polished")
+func TestDictationRoutesWholeRecordingOverTwoMinutesToGroq(t *testing.T) {
+	selected := ""
+	handler := New(Dependencies{
+		Speech: speechStub{text: "qwen text"},
+		Text:   &textStub{text: "最终文字"},
+		SpeechForProvider: func(name, _ string) (provider.Speech, error) {
+			selected = name
+			return speechStub{text: "groq text"}, nil
+		},
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxAudioBytes:  10 << 20,
+		MaxDuration:    5 * time.Minute,
+		RequestTimeout: 5 * time.Second,
+		RequestsPerMin: 100,
+	})
+	request := multipartRequest(t, testWAV(time.Second), "recording.wav", "120001", "polished")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusUnprocessableEntity {
+	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	var body struct {
-		Error apiError `json:"error"`
+	if selected != "groq" {
+		t.Fatalf("selected provider = %q, want groq", selected)
 	}
+	var body dictationResponse
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Error.Code != "single_shot_too_long" {
-		t.Fatalf("error code = %q", body.Error.Code)
+	if body.RawText != "groq text" {
+		t.Fatalf("raw_text = %q", body.RawText)
 	}
 }
 

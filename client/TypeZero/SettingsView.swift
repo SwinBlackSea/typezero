@@ -186,9 +186,32 @@ private struct ServerURLField: NSViewRepresentable {
             self.parent = parent
         }
 
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            disableSystemSuggestions(in: field)
+        }
+
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
+            disableSystemSuggestions(in: field)
             parent.text = field.stringValue
+        }
+
+        /// NSTextField delegates editing to the window's shared NSTextView
+        /// field editor. Disabling completion only on NSTextField leaves the
+        /// field editor's spelling/replacement candidate panel enabled, which
+        /// appears as an empty translucent popup on macOS 12.
+        private func disableSystemSuggestions(in field: NSTextField) {
+            guard let editor = field.currentEditor() as? NSTextView else { return }
+            editor.isAutomaticTextCompletionEnabled = false
+            editor.isAutomaticTextReplacementEnabled = false
+            editor.isAutomaticSpellingCorrectionEnabled = false
+            editor.isAutomaticQuoteSubstitutionEnabled = false
+            editor.isAutomaticDashSubstitutionEnabled = false
+            editor.isAutomaticLinkDetectionEnabled = false
+            editor.isAutomaticDataDetectionEnabled = false
+            editor.isContinuousSpellCheckingEnabled = false
+            editor.isGrammarCheckingEnabled = false
         }
     }
 }

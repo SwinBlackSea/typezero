@@ -23,55 +23,60 @@ import (
 )
 
 type Dependencies struct {
-	Speech            provider.Speech
-	Text              provider.Text
-	SpeechForKey      func(string) provider.Speech
-	TextForKey        func(string) provider.Text
+	Speech       provider.Speech
+	Text         provider.Text
+	SpeechForKey func(string) provider.Speech
+	TextForKey   func(string) provider.Text
 	// SpeechForProvider builds the ASR engine selected by the server-global
 	// runtime config. dashScopeKey is the caller's own DashScope key when
 	// provided; it is only used for the qwen engine. Return
 	// ErrGroqNotConfigured when the server has no Groq key.
 	SpeechForProvider func(providerName, dashScopeKey string) (provider.Speech, error)
+	// WrapQwen applies the optional Qwen-first delayed fallback. It is kept
+	// separate from SpeechForProvider so ASR comparison always receives the
+	// exact provider requested and cannot be mislabeled.
+	WrapQwen func(provider.Speech) provider.Speech
 	// RuntimeConfig is the server-global config edited by the client through
 	// /config. When nil, the API falls back to the static env-default Speech.
-	RuntimeConfig  *serverconfig.Store
-	PrimaryLabel      string
-	CompareSpeech     provider.Speech
-	CompareLabel      string
-	CompareFile       string
-	ChunkSeconds      int
-	TestAudioDir      string
-	Logger            *slog.Logger
-	MaxAudioBytes     int64
-	MaxDuration       time.Duration
-	RequestTimeout    time.Duration
-	RequestsPerMin    int
-	ASRConcurrency    int
-	TrustedProxyCIDR  string
-	SessionTTL        time.Duration
+	RuntimeConfig    *serverconfig.Store
+	PrimaryLabel     string
+	CompareSpeech    provider.Speech
+	CompareLabel     string
+	CompareFile      string
+	ChunkSeconds     int
+	TestAudioDir     string
+	Logger           *slog.Logger
+	MaxAudioBytes    int64
+	MaxDuration      time.Duration
+	RequestTimeout   time.Duration
+	RequestsPerMin   int
+	ASRConcurrency   int
+	TrustedProxyCIDR string
+	SessionTTL       time.Duration
 }
 
 type API struct {
-	speech         provider.Speech
-	text           provider.Text
-	speechForKey   func(string) provider.Speech
-	textForKey     func(string) provider.Text
+	speech            provider.Speech
+	text              provider.Text
+	speechForKey      func(string) provider.Speech
+	textForKey        func(string) provider.Text
 	speechForProvider func(providerName, dashScopeKey string) (provider.Speech, error)
-	runtime        *serverconfig.Store
-	compare        *compareRecorder
-	compareFile    string
-	compareSpeech  provider.Speech
-	compareLabel   string
-	chunkSeconds   int
-	testAudioDir   string
-	logger         *slog.Logger
-	maxAudioBytes  int64
-	maxDuration    time.Duration
-	requestTimeout time.Duration
-	limiter        *rateLimiter
-	asrSem         chan struct{}
-	trustedProxy   *net.IPNet
-	sessions       *SessionStore
+	wrapQwen          func(provider.Speech) provider.Speech
+	runtime           *serverconfig.Store
+	compare           *compareRecorder
+	compareFile       string
+	compareSpeech     provider.Speech
+	compareLabel      string
+	chunkSeconds      int
+	testAudioDir      string
+	logger            *slog.Logger
+	maxAudioBytes     int64
+	maxDuration       time.Duration
+	requestTimeout    time.Duration
+	limiter           *rateLimiter
+	asrSem            chan struct{}
+	trustedProxy      *net.IPNet
+	sessions          *SessionStore
 }
 
 type apiError struct {
@@ -147,25 +152,26 @@ func New(deps Dependencies) http.Handler {
 		deps.ASRConcurrency = 1
 	}
 	api := &API{
-		speech:         deps.Speech,
-		text:           deps.Text,
-		speechForKey:   deps.SpeechForKey,
-		textForKey:     deps.TextForKey,
+		speech:            deps.Speech,
+		text:              deps.Text,
+		speechForKey:      deps.SpeechForKey,
+		textForKey:        deps.TextForKey,
 		speechForProvider: deps.SpeechForProvider,
-		runtime:        deps.RuntimeConfig,
-		compare:        nil,
-		compareFile:    deps.CompareFile,
-		compareSpeech:  deps.CompareSpeech,
-		compareLabel:   deps.CompareLabel,
-		chunkSeconds:   deps.ChunkSeconds,
-		testAudioDir:   deps.TestAudioDir,
-		logger:         deps.Logger,
-		maxAudioBytes:  deps.MaxAudioBytes,
-		maxDuration:    deps.MaxDuration,
-		requestTimeout: deps.RequestTimeout,
-		limiter:        newRateLimiter(deps.RequestsPerMin),
-		asrSem:         make(chan struct{}, deps.ASRConcurrency),
-		sessions:       newSessionStore(deps.SessionTTL),
+		wrapQwen:          deps.WrapQwen,
+		runtime:           deps.RuntimeConfig,
+		compare:           nil,
+		compareFile:       deps.CompareFile,
+		compareSpeech:     deps.CompareSpeech,
+		compareLabel:      deps.CompareLabel,
+		chunkSeconds:      deps.ChunkSeconds,
+		testAudioDir:      deps.TestAudioDir,
+		logger:            deps.Logger,
+		maxAudioBytes:     deps.MaxAudioBytes,
+		maxDuration:       deps.MaxDuration,
+		requestTimeout:    deps.RequestTimeout,
+		limiter:           newRateLimiter(deps.RequestsPerMin),
+		asrSem:            make(chan struct{}, deps.ASRConcurrency),
+		sessions:          newSessionStore(deps.SessionTTL),
 	}
 	if deps.RuntimeConfig != nil {
 		api.rebuildCompare()
@@ -337,24 +343,39 @@ func (a *API) dictations(w http.ResponseWriter, r *http.Request) {
 		a.handleChunked(w, r, ctx, requestID, sessionID, chunkIndex, chunkTotal, isLast, declaredDuration, audio, speech, text, mode, started, &timings)
 		return
 	}
-	// A single-shot upload reaches the ASR provider in one call. Qwen-ASR
-	// caps a single call at 3 minutes, so longer whole-file uploads must go
-	// through chunking (CHUNK_SECONDS>0) instead of failing cryptically.
-	if declaredDuration > maxSingleShotDuration {
-		timings.intake = time.Since(intakeStarted)
-		a.writeTimingHeader(w, &timings)
-		a.fail(w, http.StatusUnprocessableEntity, "single_shot_too_long", "单段识别上限 3 分钟，请配置切割（CHUNK_SECONDS>0）或缩短录音")
-		a.log(requestID, "", 0, started, timings, "single_shot_too_long", nil)
-		return
+
+	// Whole recordings over two minutes bypass Qwen and go directly to
+	// Groq. This keeps the normal path single-shot (no chunk sessions or LLM
+	// overlap merge) while staying clear of Qwen's three-minute hard limit.
+	if declaredDuration > longAudioGroqThreshold || info.Duration > longAudioGroqThreshold {
+		if a.speechForProvider == nil {
+			a.writeTimingHeader(w, &timings)
+			a.fail(w, http.StatusInternalServerError, "speech_provider_unavailable", "长录音识别服务未配置")
+			a.log(requestID, "", 0, started, timings, "speech_provider_unavailable", nil)
+			return
+		}
+		speech, err = a.speechForProvider("groq", "")
+		if err != nil {
+			a.writeTimingHeader(w, &timings)
+			a.fail(w, http.StatusBadRequest, "groq_not_configured", "长录音需要Groq，请检查服务端配置")
+			a.log(requestID, "", 0, started, timings, "groq_not_configured", err)
+			return
+		}
+		if a.logger != nil {
+			a.logger.Info("asr long recording routed",
+				"provider", "groq",
+				"declared_duration_ms", declaredDuration.Milliseconds(),
+				"audio_duration_ms", info.Duration.Milliseconds(),
+				"threshold_ms", longAudioGroqThreshold.Milliseconds(),
+			)
+		}
 	}
 
 	a.saveTestAudio(requestID, "", 0, audio.Data)
 	a.handleSingle(w, r, ctx, requestID, audio, speech, text, mode, started, &timings)
 }
 
-// maxSingleShotDuration is the Qwen-ASR per-call ceiling (3 minutes / 10 MB).
-// Whole-file uploads longer than this are rejected unless the client chunks.
-const maxSingleShotDuration = 3 * time.Minute
+const longAudioGroqThreshold = 2 * time.Minute
 
 // saveTestAudio persists an uploaded WAV under TEST_AUDIO_DIR (test mode only)
 // so the same recording can be replayed against different provider configs
@@ -389,8 +410,10 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 		a.log(requestID, "", 0, started, *timings, code, err)
 		return
 	}
-	rawText, err := speech.Transcribe(ctx, audio)
-	a.releaseASR()
+	rawText, err := func() (string, error) {
+		defer a.releaseASR()
+		return speech.Transcribe(ctx, audio)
+	}()
 	timings.asr = time.Since(asrStarted)
 	if err != nil {
 		// Silent audio is a soft failure: the no_speech warning below
@@ -504,8 +527,10 @@ func (a *API) handleChunked(w http.ResponseWriter, r *http.Request, ctx context.
 	// measures the real upstream transcription, not queueing behind other
 	// chunks.
 	asrStarted := time.Now()
-	rawText, asrErr := speech.Transcribe(ctx, audio)
-	a.releaseASR()
+	rawText, asrErr := func() (string, error) {
+		defer a.releaseASR()
+		return speech.Transcribe(ctx, audio)
+	}()
 	asrElapsed := time.Since(asrStarted)
 	timings.asr = asrElapsed
 
@@ -838,6 +863,9 @@ func (a *API) providersForRequest(r *http.Request) (provider.Speech, provider.Te
 		selected, err := a.speechForProvider(name, key)
 		if err != nil {
 			return nil, nil, err
+		}
+		if name == "qwen" && a.wrapQwen != nil {
+			selected = a.wrapQwen(selected)
 		}
 		return selected, text, nil
 	}

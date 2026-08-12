@@ -42,10 +42,13 @@ type Config struct {
 	// recording: 0 disables chunking (whole file, single ASR call), N cuts
 	// every N seconds with a fixed 2s overlap (window = N+2s). The value is
 	// exposed via /healthz so the client can cut accordingly.
-	ChunkSeconds      int
-	ASRCompare        bool
-	ASRCompareFile    string
-	TestAudioDir      string
+	ChunkSeconds       int
+	ASRCompare         bool
+	ASRCompareFile     string
+	TestAudioDir       string
+	ASRHedge           bool
+	ASRHedgeDelay      time.Duration
+	QwenResultDeadline time.Duration
 }
 
 func FromEnv() (Config, error) {
@@ -68,19 +71,22 @@ func FromEnv() (Config, error) {
 		// Measured on the project account: two concurrent ASR calls queue
 		// behind each other (one waited 90s and timed out). Serial is the
 		// safe default; raise only after verifying the account quota.
-		ASRConcurrency:   1,
-		TrustedProxyCIDR: strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
-		SessionTTL:       5 * time.Minute,
-		QwenWaitTimeout:  30 * time.Second,
-		SpeechProvider:   "qwen",
-		GroqAPIKey:       strings.TrimSpace(os.Getenv("GROQ_API_KEY")),
-		GroqModel:        envOr("GROQ_MODEL", "whisper-large-v3"),
-		GroqURL:          envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
-		ConfigFile:       envOr("CONFIG_FILE", "server-config.json"),
-		ChunkSeconds:     30,
-		ASRCompare:        envBool("ASR_COMPARE"),
-		ASRCompareFile:    envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),
-		TestAudioDir:      strings.TrimSpace(os.Getenv("TEST_AUDIO_DIR")),
+		ASRConcurrency:     1,
+		TrustedProxyCIDR:   strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDR")),
+		SessionTTL:         5 * time.Minute,
+		QwenWaitTimeout:    30 * time.Second,
+		SpeechProvider:     "qwen",
+		GroqAPIKey:         strings.TrimSpace(os.Getenv("GROQ_API_KEY")),
+		GroqModel:          envOr("GROQ_MODEL", "whisper-large-v3"),
+		GroqURL:            envOr("GROQ_API_URL", "https://api.groq.com/openai/v1"),
+		ConfigFile:         envOr("CONFIG_FILE", "server-config.json"),
+		ChunkSeconds:       0,
+		ASRCompare:         envBool("ASR_COMPARE"),
+		ASRCompareFile:     envOr("ASR_COMPARE_FILE", "/tmp/asr_compare.jsonl"),
+		TestAudioDir:       strings.TrimSpace(os.Getenv("TEST_AUDIO_DIR")),
+		ASRHedge:           envBool("ASR_HEDGE"),
+		ASRHedgeDelay:      2 * time.Second,
+		QwenResultDeadline: 16 * time.Second,
 	}
 
 	if cfg.QwenAPIKey == "" {
@@ -141,6 +147,21 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.SpeechProvider == "groq" && cfg.GroqAPIKey == "" {
 		return Config{}, errors.New("GROQ_API_KEY is required when SPEECH_PROVIDER=groq")
+	}
+	if cfg.ASRHedgeDelay, err = durationEnv("ASR_HEDGE_DELAY", cfg.ASRHedgeDelay); err != nil {
+		return Config{}, err
+	}
+	if cfg.QwenResultDeadline, err = durationEnv("QWEN_RESULT_DEADLINE", cfg.QwenResultDeadline); err != nil {
+		return Config{}, err
+	}
+	if cfg.QwenResultDeadline <= cfg.ASRHedgeDelay {
+		return Config{}, errors.New("QWEN_RESULT_DEADLINE must be greater than ASR_HEDGE_DELAY")
+	}
+	if cfg.ASRHedge && cfg.GroqAPIKey == "" {
+		return Config{}, errors.New("GROQ_API_KEY is required when ASR_HEDGE is enabled")
+	}
+	if cfg.ASRHedge && cfg.ASRCompare {
+		return Config{}, errors.New("ASR_HEDGE and ASR_COMPARE cannot be enabled together")
 	}
 	if err := validateProviderURL("GROQ_API_URL", cfg.GroqURL); err != nil {
 		return Config{}, err

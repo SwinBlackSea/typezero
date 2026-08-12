@@ -16,6 +16,7 @@ import (
 	"typezero/internal/provider"
 	"typezero/internal/provider/deepseek"
 	"typezero/internal/provider/groq"
+	"typezero/internal/provider/hedged"
 	"typezero/internal/provider/qwen"
 	"typezero/internal/serverconfig"
 )
@@ -29,12 +30,23 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: cfg.ProviderTimeout}
-	speech := provider.Speech(qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout))
+	qwenSpeech := provider.Speech(qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout))
+	var groqSpeech provider.Speech
+	if cfg.GroqAPIKey != "" {
+		groqSpeech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
+	}
+	wrapQwen := func(primary provider.Speech) provider.Speech { return primary }
+	if cfg.ASRHedge {
+		wrapQwen = func(primary provider.Speech) provider.Speech {
+			return hedged.New(primary, groqSpeech, cfg.ASRHedgeDelay, cfg.QwenResultDeadline, logger)
+		}
+	}
+	speech := wrapQwen(qwenSpeech)
 	if cfg.SpeechProvider == "groq" {
 		// Groq Whisper runs at roughly real-time or faster and is not subject
 		// to DashScope's queueing; it is the preferred ASR when configured.
 		// Clients that pass their own DashScope key still use Qwen.
-		speech = groq.New(httpClient, cfg.GroqURL, cfg.GroqAPIKey, cfg.GroqModel)
+		speech = groqSpeech
 	}
 	text := deepseek.New(httpClient, cfg.DeepSeekURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel)
 	runtimeConfig := serverconfig.New(cfg.ConfigFile, serverconfig.Config{
@@ -44,7 +56,9 @@ func main() {
 	primaryLabel := cfg.SpeechProvider
 	var compareSpeech provider.Speech
 	compareLabel := ""
+	compareFile := ""
 	if cfg.ASRCompare {
+		compareFile = cfg.ASRCompareFile
 		if cfg.SpeechProvider == "groq" {
 			compareSpeech = qwen.New(httpClient, cfg.QwenURL, cfg.QwenAPIKey, cfg.QwenModel, cfg.QwenWaitTimeout)
 			compareLabel = "qwen"
@@ -81,21 +95,22 @@ func main() {
 				return nil, fmt.Errorf("unsupported speech provider %q", name)
 			}
 		},
-		RuntimeConfig:     runtimeConfig,
-		PrimaryLabel:      primaryLabel,
-		CompareSpeech:     compareSpeech,
-		CompareLabel:      compareLabel,
-		CompareFile:       cfg.ASRCompareFile,
-		ChunkSeconds:      cfg.ChunkSeconds,
-		TestAudioDir:      cfg.TestAudioDir,
-		Logger:            logger,
-		MaxAudioBytes:     cfg.MaxAudioBytes,
-		MaxDuration:       cfg.MaxAudioDuration,
-		RequestTimeout:    cfg.RequestTimeout,
-		RequestsPerMin:    cfg.RequestsPerMinute,
-		ASRConcurrency:    cfg.ASRConcurrency,
-		TrustedProxyCIDR:  cfg.TrustedProxyCIDR,
-		SessionTTL:        cfg.SessionTTL,
+		WrapQwen:         wrapQwen,
+		RuntimeConfig:    runtimeConfig,
+		PrimaryLabel:     primaryLabel,
+		CompareSpeech:    compareSpeech,
+		CompareLabel:     compareLabel,
+		CompareFile:      compareFile,
+		ChunkSeconds:     cfg.ChunkSeconds,
+		TestAudioDir:     cfg.TestAudioDir,
+		Logger:           logger,
+		MaxAudioBytes:    cfg.MaxAudioBytes,
+		MaxDuration:      cfg.MaxAudioDuration,
+		RequestTimeout:   cfg.RequestTimeout,
+		RequestsPerMin:   cfg.RequestsPerMinute,
+		ASRConcurrency:   cfg.ASRConcurrency,
+		TrustedProxyCIDR: cfg.TrustedProxyCIDR,
+		SessionTTL:       cfg.SessionTTL,
 	})
 
 	server := &http.Server{

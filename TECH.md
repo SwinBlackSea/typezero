@@ -4,15 +4,14 @@
 
 ```text
 macOS 客户端
-  录音（增量分段）-> 多次 POST /v1/dictations（同一 session_id）
-                    -> 末段触发合并 -> 插入 final_text
+  整段录音 -> POST /v1/dictations -> 插入 final_text
                     |
                     v
 轻量后端
   Qwen3-ASR-Flash -> raw_text -> DeepSeek -> final_text
 ```
 
-客户端通过 `session_id` 分多次上传音频段；服务端按段做 ASR，末段到达后由 DeepSeek 一次完成去重合并与润色。不使用 WebSocket。
+客户端统一整段上传，不使用WebSocket。两分钟以内使用Qwen优先的延迟对冲；超过两分钟直接使用Groq，避免Qwen三分钟单次上限和分段会话复杂度。
 
 ## macOS 客户端
 
@@ -40,7 +39,7 @@ macOS 客户端
 - 技术栈：Go，HTTP 单进程服务；运行期仅持久化一份服务端全局配置（`server-config.json`，只含 `speech_provider` 与 `chunk_seconds`，不含任何密钥），其余保持无状态。
 - 核心接口：`POST /v1/dictations`，接收音频和输出模式，返回 `raw_text`、`final_text` 及错误信息。
 - 语音识别：`SPEECH_PROVIDER` 可选 `qwen`（DashScope）或 `groq`（Groq Whisper），默认 `qwen`。实测 Groq `whisper-large-v3` 为实时数倍速（10s 音频约 0.4s、30s 约 1.0s、60s 约 1.2s），且不受 DashScope 账号排队影响，为当前首选；Qwen 作为国内可用性的备用。客户端限制单次录音不超过 5 分钟、10 MiB。
-- 切割配置：`CHUNK_SECONDS`（默认 30，范围 0–120）。`0` = 不切割，整段直传（Qwen-ASR 单次上限 3 分钟，超出会被服务端明确拒绝）；`N` = 每 N 秒切一段、2 秒重叠、窗口 N+2 秒（第一段即 N+2 秒）。识别引擎与切割间隔都是服务端全局配置：`SPEECH_PROVIDER` / `CHUNK_SECONDS` 是环境默认值，客户端设置页可经 `/config` 直接修改并持久化到 `server-config.json`（该文件存在时优先于环境变量），对所有录音生效。客户端录音前从 `/healthz` 拉取 `chunk_seconds` 按此切割，不随请求上传任何配置。
+- 上传策略：`CHUNK_SECONDS`固定为`0`，客户端始终整段上传。录音不超过120秒时使用Qwen优先延迟对冲；超过120秒时服务端直接选择Groq。服务端仍兼容旧客户端的分段字段，但新客户端不再进入分段路径。
 - 文字处理：开发期默认 `deepseek-v4-flash` 并关闭思考模式，负责纠错、去除口头语和重复、补充标点、分段及轻度润色，必须保持原意。原文有明确多事项、步骤或待办信号时使用 `1. 2. 3.` 编号；普通聊天和单一陈述不强行列表化，也不凭空添加标题或事项。
 - 提示词策略：不维护热词表，也不向 ASR/润色注入产品专有提示词。Groq 与 Qwen 都不传 `prompt`/固定语言（逐段自动检测），DeepSeek 使用纯通用编辑提示词，靠模型常识与上下文纠错，避免热词表越维护越大的问题。
 - 模型抽象：定义 `SpeechProvider` 和 `TextProvider`，以后可替换为 OpenAI Transcribe、Groq Whisper、本地 WhisperKit或其他模型。
@@ -56,8 +55,8 @@ macOS 客户端
 
 配置接口（客户端设置页调用，修改后对全部录音生效）：
 
-- `GET /config`：返回当前生效配置 `{"speech_provider":"qwen","chunk_seconds":30}`。
-- `POST /config`：`application/json`，字段均可选：`speech_provider`（`qwen`/`groq`）、`chunk_seconds`（0–120）。校验通过后持久化到 `server-config.json` 并立即生效；非法值或服务端未配置 Groq Key 时返回 400。
+- `GET /config`：返回当前生效配置 `{"speech_provider":"qwen","chunk_seconds":0}`。
+- `POST /config`：`application/json`，`speech_provider`可选`qwen`/`groq`；`chunk_seconds`保留用于旧客户端兼容，当前生产配置固定为0。校验通过后持久化到`server-config.json`并立即生效。
 
 用户自带 Key 时，客户端分别通过 `X-TypeZero-DashScope-Key` 和 `X-TypeZero-DeepSeek-Key` 请求头传递。服务端只在当前请求中使用，不保存、不回传、不写入日志；请求头未提供时使用服务端环境变量中的 Key。
 
@@ -97,12 +96,15 @@ macOS 客户端
 - 默认组合：Groq Whisper（whisper-large-v3）+ DeepSeek；Qwen3-ASR-Flash 为备用。
 - 延迟实测对比（同一 30s 音频）：Qwen 公共域名 72s、Qwen 专属域名 30s、Groq 约 1.0s。Groq 免费层无需银行卡（注册需过 Cloudflare 人机验证，建议用住宅 IP），付费层约 $0.111/小时；硅基流动已下架 Whisper，仅剩 SenseVoiceSmall / TeleSpeechASR，作为国内备选。
 - 对比模式：`ASR_COMPARE=1` 时服务端把每段音频同时发给主/备两个 ASR，逐段记录各自耗时与原始转写，并在会话结束时用同一 DeepSeek 润色备选结果，全部写入 `ASR_COMPARE_FILE`（默认 `/tmp/asr_compare.jsonl`，仅测试期开启，不进 server.log）。Groq 不发送 `language` 字段，逐段自动检测语言，避免固定 `zh` 把英文/中英混杂音频拖成中文乱码（历史实测教训）。
+- 生产延迟对冲：`ASR_HEDGE=1` 且主引擎为 Qwen 时，Qwen 立即请求；若 `ASR_HEDGE_DELAY`（默认 2 秒）后仍未完成，再并行启动 Groq。Qwen 在 `QWEN_RESULT_DEADLINE`（默认 16 秒）内成功仍优先采用；超过截止时间则取消 Qwen 并采用 Groq。该模式不记录转写原文；慢请求可能同时产生两家 ASR 费用。`ASR_COMPARE` 必须保持 `0`，它是独立的显式测试工具，不得与生产延迟对冲混用。
 - 中文/中英混录音实测（`ASR_COMPARE=1`）：Qwen 国内专线（`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`）速度已追平 Groq（10s 音频约 1.3~2.3s、32s 约 2.4~2.7s，Groq 约 0.5~2s），中文专有名词准确率明显更高（Groq 对同段中文听错 5 个词，Qwen 全对）。Groq 快但中文专有名词弱、静音段有幻觉，两者都不传固定语言与 prompt；专有名词纠错交给 DeepSeek 通用润色。
 - Qwen 适合国内调用，中文与方言覆盖较好，成本低，且符合录完后一次处理的模式。
 - ChatGPT/Codex 订阅不包含 API 调用额度，也不是产品运行依赖；模型 API 需要单独申请和计费。
 - 后续用真实录音建立小型测试集，对比 Qwen、OpenAI、Groq Whisper 和本地模型的准确率、延迟与成本。
 
-## 分块听写提速方案
+## 历史方案：分块听写（当前生产路径已停用）
+
+以下内容保留为历史设计与兼容说明。当前客户端始终整段上传：不超过120秒走Qwen优先延迟对冲，超过120秒直接走Groq。
 
 `feature/chunked-dictation` 分支将长录音切成重叠分段并行上传，服务端逐段 ASR 后由 LLM 一次性去重合并并润色。实测瓶颈不在架构本身：单段（9.5 秒音频）ASR 耗时 24~73 秒，且并发越多越慢（2 段并发约 24 秒/段，4 段并发 50~73 秒/段），指向 DashScope 账号侧并发/限流排队；润色约 0.8 秒、上传约 0.25 秒/段，可忽略。另有缺陷会把"慢"变成"直接失败"：会话清理误杀正在 ASR 的活跃会话、客户端非末段超时 60 秒小于服务端 100 秒、`duration_ms` 发送总时长导致略超 5 分钟的录音整单被拒、客户端把服务端累计 ASR 耗时重复求和导致计时失真。
 

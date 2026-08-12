@@ -151,7 +151,6 @@ final class AppModel: ObservableObject {
             try await recorder.start()
             elapsedSeconds = 0
             lastProcessingTiming = nil
-            beginIncrementalUpload()
             setPhase(.recording)
             feedbackTonePlayer.playStart()
         } catch {
@@ -226,18 +225,8 @@ final class AppModel: ObservableObject {
                     dashscopeAPIKey: self.dashscopeAPIKey,
                     deepSeekAPIKey: self.deepSeekAPIKey
                 )
-                let sessionID = (incrementalSessionID != nil && !incrementalFailed && !alreadyUploaded.isEmpty)
-                    ? incrementalSessionID
-                    : nil
                 let result = try await Task.detached(priority: .userInitiated) {
-                    if let sessionID {
-                        return try await client.finishChunkedUpload(
-                            recording: recording,
-                            sessionID: sessionID,
-                            alreadyUploaded: alreadyUploaded
-                        )
-                    }
-                    return try await client.uploadChunked(recording: recording)
+                    return try await client.upload(recording: recording)
                 }.value
                 try Task.checkCancellation()
                 let response = result.response

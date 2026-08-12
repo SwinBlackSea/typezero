@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,10 +50,10 @@ func TestTranscribe(t *testing.T) {
 // TestTranscribeRetriesRateLimit verifies that a 429 (DashScope rate limit)
 // is retried with backoff and that the eventual success is returned.
 func TestTranscribeRetriesRateLimit(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if calls < 3 {
+		calls.Add(1)
+		if calls.Load() < 3 {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":{"code":"Throttling.RateQuota"}}`))
 			return
@@ -70,8 +71,8 @@ func TestTranscribeRetriesRateLimit(t *testing.T) {
 	if got != "重试成功" {
 		t.Fatalf("Transcribe() = %q", got)
 	}
-	if calls != 3 {
-		t.Fatalf("expected 3 attempts, got %d", calls)
+	if calls.Load() != 3 {
+		t.Fatalf("expected 3 attempts, got %d", calls.Load())
 	}
 }
 
@@ -79,9 +80,9 @@ func TestTranscribeRetriesRateLimit(t *testing.T) {
 // (DashScope queued past the client deadline) is not retried, so a slow
 // upstream call cannot be turned into multiple stacked timeouts.
 func TestTranscribeNoRetryOnClientTimeout(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(5 * time.Second):
@@ -96,7 +97,7 @@ func TestTranscribeNoRetryOnClientTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("Transcribe() error = nil, want timeout")
 	}
-	if calls != 1 {
-		t.Fatalf("expected 1 attempt (no retry on client timeout), got %d", calls)
+	if calls.Load() != 1 {
+		t.Fatalf("expected 1 attempt (no retry on client timeout), got %d", calls.Load())
 	}
 }
