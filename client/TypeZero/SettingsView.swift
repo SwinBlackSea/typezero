@@ -186,6 +186,17 @@ private struct ServerURLField: NSViewRepresentable {
             self.parent = parent
         }
 
+        /// Runs before the shared field editor begins its first editing
+        /// session. macOS 12 may create the completion panel before
+        /// controlTextDidBeginEditing, so configuring it there is too late
+        /// for the first keystroke.
+        func control(_ control: NSControl, textShouldBeginEditing fieldEditor: NSText) -> Bool {
+            if let editor = fieldEditor as? NSTextView {
+                disableSystemSuggestions(in: editor)
+            }
+            return true
+        }
+
         func controlTextDidBeginEditing(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             disableSystemSuggestions(in: field)
@@ -203,6 +214,10 @@ private struct ServerURLField: NSViewRepresentable {
         /// appears as an empty translucent popup on macOS 12.
         private func disableSystemSuggestions(in field: NSTextField) {
             guard let editor = field.currentEditor() as? NSTextView else { return }
+            disableSystemSuggestions(in: editor)
+        }
+
+        private func disableSystemSuggestions(in editor: NSTextView) {
             editor.isAutomaticTextCompletionEnabled = false
             editor.isAutomaticTextReplacementEnabled = false
             editor.isAutomaticSpellingCorrectionEnabled = false
