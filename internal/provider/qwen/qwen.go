@@ -31,6 +31,8 @@ func New(httpClient *http.Client, url, apiKey, model string, waitTimeout time.Du
 	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model, waitTimeout: waitTimeout}
 }
 
+func (c *Client) ProviderName() string { return "qwen" }
+
 type request struct {
 	Model      string     `json:"model"`
 	Messages   []message  `json:"messages"`

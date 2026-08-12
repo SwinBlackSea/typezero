@@ -32,6 +32,11 @@ type result struct {
 }
 
 func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, error) {
+	text, _, err := c.TranscribeWithProvider(ctx, audio)
+	return text, err
+}
+
+func (c *Client) TranscribeWithProvider(ctx context.Context, audio provider.Audio) (string, string, error) {
 	started := time.Now()
 	primaryCtx, cancelPrimary := context.WithCancel(ctx)
 	fallbackCtx, cancelFallback := context.WithCancel(ctx)
@@ -67,7 +72,7 @@ func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 
 		case got := <-primaryResult:
 			if time.Since(started) >= c.deadline {
@@ -75,18 +80,20 @@ func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, 
 				cancelPrimary()
 				startFallback("primary_deadline")
 				if savedFallback != nil {
-					return fallbackOutcome(*savedFallback, primaryErr)
+					text, err := fallbackOutcome(*savedFallback, primaryErr)
+					return text, "groq", err
 				}
 				continue
 			}
 			primaryDone = true
 			if got.err == nil || errors.Is(got.err, provider.ErrEmptyTranscript) {
-				return got.text, got.err
+				return got.text, "qwen", got.err
 			}
 			primaryErr = got.err
 			startFallback("primary_error")
 			if savedFallback != nil {
-				return fallbackOutcome(*savedFallback, primaryErr)
+				text, err := fallbackOutcome(*savedFallback, primaryErr)
+				return text, "groq", err
 			}
 
 		case <-delayTimer.C:
@@ -100,7 +107,8 @@ func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, 
 				if c.logger != nil && savedFallback.err == nil {
 					c.logger.Info("asr hedge fallback selected", "reason", "primary_deadline")
 				}
-				return fallbackOutcome(*savedFallback, primaryErr)
+				text, err := fallbackOutcome(*savedFallback, primaryErr)
+				return text, "groq", err
 			}
 
 		case got := <-fallbackResult:
@@ -112,7 +120,8 @@ func (c *Client) Transcribe(ctx context.Context, audio provider.Audio) (string, 
 					}
 					c.logger.Info("asr hedge fallback selected", "reason", reason)
 				}
-				return fallbackOutcome(got, primaryErr)
+				text, err := fallbackOutcome(got, primaryErr)
+				return text, "groq", err
 			}
 			// The fallback may finish first, but Qwen remains accuracy-first
 			// until the configured deadline.

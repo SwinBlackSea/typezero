@@ -34,6 +34,8 @@ func New(httpClient *http.Client, url, apiKey, model string) *Client {
 	return &Client{httpClient: httpClient, url: url, apiKey: apiKey, model: model}
 }
 
+func (c *Client) ProviderName() string { return "groq" }
+
 type transcriptionResponse struct {
 	Text  string `json:"text"`
 	XGroq struct {

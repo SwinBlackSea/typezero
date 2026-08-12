@@ -410,10 +410,22 @@ func (a *API) handleSingle(w http.ResponseWriter, r *http.Request, ctx context.C
 		a.log(requestID, "", 0, started, *timings, code, err)
 		return
 	}
+	var selectedProvider string
 	rawText, err := func() (string, error) {
 		defer a.releaseASR()
+		if detailed, ok := speech.(provider.ResultSpeech); ok {
+			result, name, transcribeErr := detailed.TranscribeWithProvider(ctx, audio)
+			selectedProvider = name
+			return result, transcribeErr
+		}
+		if named, ok := speech.(provider.NamedSpeech); ok {
+			selectedProvider = named.ProviderName()
+		}
 		return speech.Transcribe(ctx, audio)
 	}()
+	if selectedProvider != "" {
+		w.Header().Set("X-TypeZero-ASR-Provider", selectedProvider)
+	}
 	timings.asr = time.Since(asrStarted)
 	if err != nil {
 		// Silent audio is a soft failure: the no_speech warning below

@@ -22,6 +22,20 @@ type Speech interface {
 	Transcribe(ctx context.Context, audio Audio) (string, error)
 }
 
+// NamedSpeech reports the provider that produced the transcript. Composite
+// implementations such as delayed hedging return the actual winner.
+type NamedSpeech interface {
+	Speech
+	ProviderName() string
+}
+
+// ResultSpeech reports request-scoped provider metadata for composite
+// providers whose selected backend can differ for every request.
+type ResultSpeech interface {
+	Speech
+	TranscribeWithProvider(ctx context.Context, audio Audio) (text, providerName string, err error)
+}
+
 type Text interface {
 	Polish(ctx context.Context, rawText string) (string, error)
 	// PolishChunks merges and polishes multiple transcript chunks that share

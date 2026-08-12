@@ -32,6 +32,13 @@ func (s speechStub) Transcribe(_ context.Context, _ provider.Audio) (string, err
 	return s.text, s.err
 }
 
+type namedSpeechStub struct {
+	speechStub
+	name string
+}
+
+func (s namedSpeechStub) ProviderName() string { return s.name }
+
 type textStub struct {
 	text      string
 	err       error
@@ -270,7 +277,7 @@ func TestDictationRoutesWholeRecordingOverTwoMinutesToGroq(t *testing.T) {
 		Text:   &textStub{text: "最终文字"},
 		SpeechForProvider: func(name, _ string) (provider.Speech, error) {
 			selected = name
-			return speechStub{text: "groq text"}, nil
+			return namedSpeechStub{speechStub: speechStub{text: "groq text"}, name: "groq"}, nil
 		},
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MaxAudioBytes:  10 << 20,
@@ -288,6 +295,9 @@ func TestDictationRoutesWholeRecordingOverTwoMinutesToGroq(t *testing.T) {
 	}
 	if selected != "groq" {
 		t.Fatalf("selected provider = %q, want groq", selected)
+	}
+	if got := response.Header().Get("X-TypeZero-ASR-Provider"); got != "groq" {
+		t.Fatalf("provider response header = %q, want groq", got)
 	}
 	var body dictationResponse
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {

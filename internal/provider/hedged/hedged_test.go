@@ -72,6 +72,20 @@ func TestPrimaryKeepsPriorityUntilDeadline(t *testing.T) {
 	}
 }
 
+func TestPrimaryReportsRequestScopedProvider(t *testing.T) {
+	client := New(
+		&fakeSpeech{delay: time.Millisecond, text: "qwen"},
+		&fakeSpeech{delay: time.Millisecond, text: "groq"},
+		20*time.Millisecond,
+		50*time.Millisecond,
+		nil,
+	)
+	text, name, err := client.TranscribeWithProvider(context.Background(), provider.Audio{})
+	if err != nil || text != "qwen" || name != "qwen" {
+		t.Fatalf("TranscribeWithProvider() = %q, %q, %v", text, name, err)
+	}
+}
+
 func TestFallbackWinsAndCancelsSlowPrimaryAtDeadline(t *testing.T) {
 	primaryCanceled := make(chan struct{})
 	client := New(
@@ -93,6 +107,20 @@ func TestFallbackWinsAndCancelsSlowPrimaryAtDeadline(t *testing.T) {
 	case <-primaryCanceled:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("slow primary was not canceled")
+	}
+}
+
+func TestFallbackReportsRequestScopedProvider(t *testing.T) {
+	client := New(
+		&fakeSpeech{delay: time.Second, text: "qwen"},
+		&fakeSpeech{delay: time.Millisecond, text: "groq"},
+		time.Millisecond,
+		5*time.Millisecond,
+		nil,
+	)
+	text, name, err := client.TranscribeWithProvider(context.Background(), provider.Audio{})
+	if err != nil || text != "groq" || name != "groq" {
+		t.Fatalf("TranscribeWithProvider() = %q, %q, %v", text, name, err)
 	}
 }
 

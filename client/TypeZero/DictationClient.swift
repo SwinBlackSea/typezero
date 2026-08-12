@@ -33,6 +33,7 @@ struct DictationUploadResult: Sendable {
 }
 
 struct ProcessingTiming: Sendable {
+    let asrProvider: String?
     let preparationMilliseconds: Int
     let requestMilliseconds: Int
     let intakeMilliseconds: Int?
@@ -164,6 +165,7 @@ struct DictationClient: Sendable {
             emptyChunks = chunks.count
         }
         let timing = ProcessingTiming(
+            asrProvider: nil,
             preparationMilliseconds: preparationMilliseconds,
             requestMilliseconds: requestMilliseconds,
             intakeMilliseconds: lastOutcome.timing.intakeMilliseconds,
@@ -350,6 +352,7 @@ struct DictationClient: Sendable {
         }
         let timing = ServerTiming.parse(httpResponse.value(forHTTPHeaderField: "Server-Timing"))
         let processing = ProcessingTiming(
+            asrProvider: httpResponse.value(forHTTPHeaderField: "X-TypeZero-ASR-Provider"),
             preparationMilliseconds: preparationMilliseconds,
             requestMilliseconds: requestMilliseconds,
             intakeMilliseconds: timing.intakeMilliseconds,
@@ -537,6 +540,7 @@ struct DictationClient: Sendable {
         let timing = outcome.timing
         let singleShot = (chunkCount ?? 1) <= 1
         return ProcessingTiming(
+            asrProvider: nil,
             preparationMilliseconds: preparationMilliseconds,
             requestMilliseconds: requestMilliseconds,
             intakeMilliseconds: timing.intakeMilliseconds,
