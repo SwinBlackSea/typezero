@@ -8,7 +8,9 @@ macOS 客户端
                     |
                     v
 轻量后端
-  Qwen3-ASR-Flash -> raw_text -> DeepSeek -> final_text
+  <= 120 秒：Qwen 优先延迟对冲 Groq
+  > 120 秒：Groq
+  ASR -> raw_text -> DeepSeek -> final_text
 ```
 
 客户端统一整段上传，不使用WebSocket。两分钟以内使用Qwen优先的延迟对冲；超过两分钟直接使用Groq，避免Qwen三分钟单次上限和分段会话复杂度。
@@ -21,6 +23,8 @@ macOS 客户端
 - 快捷键：主线使用 `NSEvent.addGlobalMonitorForEvents` 监听全局键盘事件，只注册 global monitor，避免本地和全局 monitor 双触发。默认使用 `Control + Option + Space`，Fn 单键仅为实验性选项；全局监听需要“输入监控”权限。`experiment/fn-event-tap` 分支仅针对 Fn 使用被动 `CGEventTap` 监听 `flagsChanged` 和 `Secondary Fn` 标志，不拦截系统事件；若 Fn 被 macOS 绑定为切换输入法，应用仍不能消除该系统行为。创建失败时回退到 global monitor，必须在 macOS 12 真机验证后才可合并。
 - 文字插入：先写入剪贴板，再通过 Accessibility API 模拟粘贴；模拟粘贴失败时保留剪贴板文字，文字插入需要“辅助功能”权限。
 - 悬浮反馈：录音和处理中使用同规格、不抢焦点的紧凑 `NSPanel` 悬浮胶囊展示；录音时保留白色、声音驱动的细波形，结束统一使用全局快捷键或菜单栏，不得抢走目标输入框焦点。成功和失败状态立即收起胶囊，改由菜单栏呈现结果。
+- 供应商反馈：服务端通过 `X-TypeZero-ASR-Provider` 响应头返回本次实际采用的 ASR；菜单栏在录音按钮上方显示路由规则，完成听写后显示“本次识别：Qwen/Groq”。对冲路径使用请求级结果元数据，禁止把供应商选择存入共享客户端状态，以免并发请求互相覆盖。
+- 设置输入框：服务地址使用 AppKit `NSTextField`。macOS 12 的字段编辑由窗口共享 `NSTextView` Field Editor 承担，必须在 `textShouldBeginEditing`（首次按键前）关闭自动补全、替换、拼写及候选功能；仅在 `controlTextDidBeginEditing` 或文字变化后关闭会导致首次编辑出现空白透明候选框。
 - 声音反馈：客户端在实际开始录音后合成并播放 `C → D`（`1 → 2`）双音，在实际停止并进入处理后播放 `C → F`（`1 → 4`）双音。使用内存生成的 WAV 交给 `NSSound` 播放，不引入音效资源；处理期间 `toggleRecording` 提前返回，因此不会更换胶囊或发声。
 - 凭据：用户自带 Key 时保存到 macOS Keychain，禁止明文落盘。
 - 分发：Developer ID 签名并经 Apple 公证，以 DMG/ZIP 发布；首版不走 Mac App Store 沙盒。
@@ -69,6 +73,8 @@ macOS 客户端
   "final_text": "整理润色后的文字"
 }
 ```
+
+成功响应同时携带 `X-TypeZero-ASR-Provider: qwen|groq`，值表示该请求最终采用的实际识别结果。短录音对冲时不能仅按时长推测供应商。
 
 润色失败仍返回 HTTP 200，保留 `raw_text`、将 `final_text` 留空，并附带结构化 `warning`，由客户端让用户确认是否插入原文。识别失败返回 502，请求处理超时返回 504；参数、格式、大小、时长和频率限制均返回结构化错误。
 
@@ -130,7 +136,7 @@ macOS 客户端
 
 ### 阶段 3 协议与限流约束（实现要点）
 
-- **超 3 分钟必须分段**：官方 Qwen-ASR API 单次音频限制 3 分钟 / 10 MB，`CHUNK_SECONDS=0` 时超 3 分钟的整段直传会被服务端明确拒绝。每段窗口 = `CHUNK_SECONDS` + 2 秒重叠（默认 30+2），远低于限制。
+- **当时的 Qwen 路径超 3 分钟必须分段**：官方 Qwen-ASR API 单次音频限制 3 分钟 / 10 MB；这是已停用分块方案的约束。当前生产路径在 120 秒以上直接把完整音频交给 Groq，不再由 Qwen 接收长音频。
 - **非末段 `chunk_total` 可为 0**：录音中不知道最终段数，服务端会话按“只增不减”接收；末段 `is_last=true` 携带权威总数并最终化会话。
 - **并发必须保守**：实测本账号两段 ASR 并发时一段排队 90 秒后超时（DashScope 按主账号 + 模型做 RPM/RPS/Traffic Burst 三层限流）。`ASR_CONCURRENCY` 默认 1，提高前必须用真机验证账号配额。
 - **排队显式化**：Qwen 请求带 `X-DashScope-Wait-Timeout: 30`，突发限流时由服务端排队（官方机制），provider 超时按官方公式 = 基础超时 + 等待时间（默认 150s）。

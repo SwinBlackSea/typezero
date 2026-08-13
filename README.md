@@ -2,13 +2,13 @@
 
 TypeZero 是一个 macOS 菜单栏语音输入工具。当前仓库包含：
 
-- `cmd/server`：Go 单进程后端，串行调用 Qwen3-ASR-Flash 和 DeepSeek。
+- `cmd/server`：Go 单进程后端；不超过 120 秒时使用 Qwen 优先、Groq 延迟对冲，超过 120 秒时整段使用 Groq，ASR 完成后调用 DeepSeek 润色。
 - `client/TypeZero`：SwiftUI/AppKit macOS 客户端，支持录音、上传、全局快捷键和文字插入。
 - `internal`：音频校验、HTTP 接口、限流和供应商适配器。
 
 ## 启动后端
 
-需要 Go 1.23+、阿里云百炼 API Key 和 DeepSeek API Key：
+需要 Go 1.23+、阿里云百炼 API Key、Groq API Key 和 DeepSeek API Key：
 
 ```bash
 cp .env.example .env
@@ -25,16 +25,16 @@ go run ./cmd/server
 curl http://127.0.0.1:8080/healthz
 ```
 
-听写接口接收不超过 10 MB、5 分钟的 M4A/MP4(AAC) 或 WAV：
+听写接口接收不超过 10 MB、5 分钟的 16 kHz、单声道 WAV：
 
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/dictations \
-  -F audio=@recording.m4a \
+  -F audio=@recording.wav \
   -F duration_ms=12000 \
   -F output_mode=polished
 ```
 
-润色成功时返回 `raw_text` 和 `final_text`。润色失败仍返回 HTTP 200、`raw_text` 和 `warning`；识别失败返回 502，超时返回 504。服务端日志不会记录音频、识别文本或 API Key。
+润色成功时返回 `raw_text` 和 `final_text`，并通过 `X-TypeZero-ASR-Provider` 响应头报告本次实际采用的 `qwen` 或 `groq`。润色失败仍返回 HTTP 200、`raw_text` 和 `warning`；识别失败返回 502，超时返回 504。服务端日志不会记录音频、识别文本或 API Key。
 
 ## 构建 macOS 客户端
 
@@ -51,6 +51,8 @@ open TypeZero.xcodeproj
 用户自带的 DashScope/DeepSeek Key 可在客户端设置中选填，只保存在 macOS Keychain。上传时 Key 仅用于当前供应商请求；后端不记录、不回传。
 
 默认快捷键为 `Control + Option + Space`；Fn 单键受具体 Mac、键盘和系统设置影响，仅作实验性选项。完成听写后，客户端会先将文字复制到剪贴板，再尝试粘贴到当前输入框。
+
+菜单栏在“开始录音”按钮上方展示路由规则，识别完成后展示本次实际采用的 Qwen 或 Groq。设置页的服务地址输入框使用 AppKit Field Editor，并在首次编辑前关闭 macOS 12 的自动候选功能，避免出现空白透明悬浮框。
 
 ## 测试
 
